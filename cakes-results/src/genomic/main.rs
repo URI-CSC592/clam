@@ -346,7 +346,7 @@ pub fn compute_recall<U: Number>(
 
         let mut num_common = 0_usize;
         while let (Some(&hit), Some(&linear_hit)) = (hits.peek(), linear_hits.peek()) {
-            if (hit - linear_hit).abs() < U::epsilon() {
+            if (hit - linear_hit).abs() <= U::epsilon() {
                 num_common += 1;
                 hits.next();
                 linear_hits.next();
