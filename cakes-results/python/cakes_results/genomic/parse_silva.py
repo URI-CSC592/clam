@@ -51,15 +51,18 @@ def parse(
     are parsed into four files:
 
     1. A plain text file containing the sequences as they appear in the FASTA
-        file. The sequences are separated by newlines.
+    file. The sequences are separated by newlines.
+
     2. A plain text file containing the sequences with all gaps removed. The
-        sequences are separated by newlines.
+    sequences are separated by newlines.
+
     3. A plain text file containing the headers of the sequences. The headers
-        are separated by newlines.
+    are separated by newlines.
+
     4. A plain text file containing the alphabet and the number of times each
-        character appears in the sequences. The first line contains the alphabet
-        in sorted order. The remaining lines contain the character and the
-        number of times it appears in the sequences.
+    character appears in the sequences. The first line contains the alphabet
+    in sorted order. The remaining lines contain the character and the number
+    of times it appears in the sequences.
     """
     logger.info(f"parsing: {fasta_file}")
 
