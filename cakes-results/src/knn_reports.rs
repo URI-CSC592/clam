@@ -198,27 +198,7 @@ fn make_reports(
         let recall = hits
             .into_iter()
             .zip(linear_hits)
-            .map(|(mut hits, mut linear_hits)| {
-                hits.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Greater));
-                let mut hits = hits.into_iter().map(|(_, d)| d).peekable();
-
-                linear_hits.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Greater));
-                let mut linear_hits = linear_hits.into_iter().map(|(_, d)| d).peekable();
-
-                let mut num_common = 0;
-                while let (Some(&hit), Some(&linear_hit)) = (hits.peek(), linear_hits.peek()) {
-                    if (hit - linear_hit).abs() < f32::EPSILON {
-                        num_common += 1;
-                        hits.next();
-                        linear_hits.next();
-                    } else if hit < linear_hit {
-                        hits.next();
-                    } else {
-                        linear_hits.next();
-                    }
-                }
-                num_common.as_f32() / k.as_f32()
-            })
+            .map(|(hits, linear_hits)| utils::compute_recall(hits, linear_hits))
             .sum::<f32>()
             / queries.len().as_f32();
         info!("Recall: {}", format_f32(recall));

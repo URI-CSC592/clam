@@ -16,6 +16,7 @@ tqdm = "^4.66.1"
 seaborn = "^0.12.2"
 matplotlib = "^3.8.0"
 fasta-reader = "^3.0.2"
+numpy = "~1.25.0"  # 1.26 doesn't install on M1 Macs
 
 [tool.poetry.group.dev.dependencies]
 pip = "^23.2.1"
