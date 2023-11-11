@@ -80,8 +80,21 @@ pub fn silva_to_dataset(
     info!("Shuffled sequences and headers.");
 
     // Split the lines into the training and query sets.
-    let queries = sequences.split_off(1000);
-    let (queries, query_headers): (Vec<_>, Vec<_>) = queries.into_iter().unzip();
+    let train = sequences.split_off(1000);
+    let (train, train_headers): (Vec<_>, Vec<_>) = train.into_iter().unzip();
+    let train = VecDataset::new(format!("{stem}-queries"), train, metric, is_expensive);
+    let train_headers = VecDataset::new(
+        format!("{stem}-train-headers"),
+        train_headers,
+        metric,
+        is_expensive,
+    );
+    info!(
+        "Using {} sequences for training.",
+        train_headers.cardinality()
+    );
+
+    let (queries, query_headers): (Vec<_>, Vec<_>) = sequences.into_iter().unzip();
     let queries = VecDataset::new(format!("{stem}-queries"), queries, metric, is_expensive);
     let query_headers = VecDataset::new(
         format!("{stem}-query-headers"),
@@ -92,19 +105,6 @@ pub fn silva_to_dataset(
     info!(
         "Using {} sequences for queries.",
         query_headers.cardinality()
-    );
-
-    let (train, train_headers): (Vec<_>, Vec<_>) = sequences.into_iter().unzip();
-    let train = VecDataset::new(format!("{stem}-train"), train, metric, is_expensive);
-    let train_headers = VecDataset::new(
-        format!("{stem}-train-headers"),
-        train_headers,
-        metric,
-        is_expensive,
-    );
-    info!(
-        "Using {} sequences for training.",
-        train_headers.cardinality()
     );
 
     assert_eq!(train.cardinality(), train_headers.cardinality());
