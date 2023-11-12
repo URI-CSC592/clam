@@ -26,19 +26,26 @@ use std::{
     time::Instant,
 };
 
-use abd_clam::{Cakes, Dataset, Instance};
+use abd_clam::{Cakes, Dataset, Instance, VecDataset};
 use clap::Parser;
 use distances::Number;
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
-#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), String> {
     env_logger::Builder::from_default_env()
         .filter_level(log::LevelFilter::Info)
         .init();
 
     let args = Args::parse();
+
+    // Parse the metric.
+    let metric = Metric::from_str(&args.metric)?;
+    let metric_name = metric.name();
+    info!("Using metric: {metric_name}");
+
+    let is_expensive = metric.is_expensive();
+    let metric = metric.metric();
 
     // Check that the data set exists.
     let stem = "silva-SSU-Ref";
@@ -56,18 +63,10 @@ fn main() -> Result<(), String> {
     info!("Using data from {unaligned_path:?}.");
 
     // Check that the output directory exists.
-    let output_dir = args.output_dir;
+    let output_dir = &args.output_dir;
     if !output_dir.exists() {
         return Err(format!("Output directory {output_dir:?} does not exist."));
     }
-
-    // Parse the metric.
-    let metric = Metric::from_str(&args.metric)?;
-    let metric_name = metric.name();
-    info!("Using metric: {metric_name}");
-
-    let is_expensive = metric.is_expensive();
-    let metric = metric.metric();
 
     let [train, queries, train_headers, query_headers] =
         read_silva::silva_to_dataset(&unaligned_path, &headers_path, metric, is_expensive)?;
@@ -87,85 +86,140 @@ fn main() -> Result<(), String> {
     let queries = queries.data().iter().collect::<Vec<_>>();
     let query_headers = query_headers.data().iter().collect::<Vec<_>>();
 
-    let seed = args.seed;
-    let criteria = abd_clam::PartitionCriteria::default();
+    // Check if the cakes data structure already exists.
+    let cakes_dir = args.input_dir.join(format!("{stem}-cakes"));
+    let (cakes, built, build_time) = if cakes_dir.exists() {
+        info!("Loading search tree from {cakes_dir:?} ...");
+        let start = Instant::now();
+        let cakes = Cakes::load(&cakes_dir, metric, is_expensive)?;
+        let load_time = start.elapsed().as_secs_f32();
+        info!("Loaded search tree in {load_time:.2e} seconds.");
 
-    info!("Creating search tree ...");
-    let start = Instant::now();
-    let mut cakes = Cakes::new(train, seed, &criteria);
-    let build_time = start.elapsed().as_secs_f32();
-    info!("Created search tree in {build_time:.2e} seconds.");
+        let tuned_algorithm = cakes.tuned_knn_algorithm();
+        let tuned_algorithm = tuned_algorithm.name();
+        info!("Tuned algorithm is {tuned_algorithm}");
 
-    let tuning_depth = args.tuning_depth;
-    let tuning_k = args.tuning_k;
-    info!("Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
+        (cakes, false, load_time)
+    } else {
+        let seed = args.seed;
+        let criteria = abd_clam::PartitionCriteria::default();
 
-    let start = Instant::now();
-    cakes.auto_tune_knn(tuning_depth, tuning_k);
-    let tuning_time = start.elapsed().as_secs_f32();
-    info!("Tuned knn-search in {tuning_time:.2e} seconds.");
+        info!("Creating search tree ...");
+        let start = Instant::now();
+        let mut cakes = Cakes::new(train, seed, &criteria);
+        let build_time = start.elapsed().as_secs_f32();
+        info!("Created search tree in {build_time:.2e} seconds.");
 
+        let tuning_depth = args.tuning_depth;
+        let tuning_k = args.tuning_k;
+        info!("Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
+
+        let start = Instant::now();
+        cakes.auto_tune_knn(tuning_depth, tuning_k);
+        let tuning_time = start.elapsed().as_secs_f32();
+        info!("Tuned knn-search in {tuning_time:.2e} seconds.");
+
+        let tuned_algorithm = cakes.tuned_knn_algorithm();
+        let tuned_algorithm = tuned_algorithm.name();
+        info!("Tuned algorithm is {tuned_algorithm}");
+
+        // Save the Cakes data structure.
+        std::fs::create_dir(&cakes_dir).map_err(|e| e.to_string())?;
+        cakes.save(&cakes_dir)?;
+
+        (cakes, true, build_time + tuning_time)
+    };
+
+    measure_throughput(
+        &cakes,
+        built,
+        build_time,
+        &args,
+        &queries,
+        &query_headers,
+        &train_headers,
+        stem,
+        metric_name,
+        output_dir,
+    )
+}
+
+/// Measure the throughput of the tuned algorithm.
+///
+/// # Arguments
+///
+/// * `cakes`: The cakes data structure.
+/// * `built`: Whether the cakes data structure was built or loaded from disk.
+/// * `build_time`: The time taken to build the cakes data structure or load it
+/// from disk.
+/// * `args`: The command line arguments.
+/// * `queries`: The queries.
+/// * `query_headers`: The headers of the queries.
+/// * `train_headers`: The headers of the training set.
+/// * `stem`: The stem of the data set name.
+/// * `metric_name`: The name of the metric.
+/// * `output_dir`: The output directory.
+///
+/// # Errors
+///
+/// * If the `output_dir` does not exist or cannot be written to.
+#[allow(clippy::too_many_arguments)]
+fn measure_throughput(
+    cakes: &Cakes<String, u32, VecDataset<String, u32>>,
+    built: bool,
+    build_time: f32,
+    args: &Args,
+    queries: &[&String],
+    query_headers: &[&String],
+    train_headers: &VecDataset<String, u32>,
+    stem: &str,
+    metric_name: &str,
+    output_dir: &Path,
+) -> Result<(), String> {
     let tuned_algorithm = cakes.tuned_knn_algorithm();
     let tuned_algorithm = tuned_algorithm.name();
-    info!("Tuned algorithm is {tuned_algorithm}");
 
     let train = cakes.shards()[0];
 
     // Perform knn-search for each value of k on all queries.
-    for k in args.ks {
+    for &k in &args.ks {
         info!("Starting knn-search with k = {k} ...");
 
         // Run the tuned algorithm.
         let start = Instant::now();
-        let results = cakes.batch_tuned_knn_search(&queries, k);
+        let results = cakes.batch_tuned_knn_search(queries, k);
         let search_time = start.elapsed().as_secs_f32();
         let throughput = queries.len().as_f32() / search_time;
         info!("With k = {k}, achieved throughput of {throughput:.2e} QPS.");
 
         // Run the linear search algorithm.
         let start = Instant::now();
-        let linear_results = cakes.batch_linear_knn_search(&queries, k);
+        let linear_results = cakes.batch_linear_knn_search(queries, k);
         let linear_search_time = start.elapsed().as_secs_f32();
         let linear_throughput = queries.len().as_f32() / linear_search_time;
         info!("With k = {k}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
 
-        // Compute the recall of the tuned algorithm.
-        let mean_recall = results
-            .iter()
-            .zip(linear_results)
-            .map(|(hits, linear_hits)| compute_recall(hits.clone(), linear_hits))
-            .sum::<f32>()
-            / queries.len().as_f32();
+        let (mean_recall, hits) = recall_and_hits(
+            results,
+            linear_results,
+            queries,
+            query_headers,
+            train_headers,
+            train,
+        );
         info!("With k = {k}, achieved mean recall of {mean_recall:.3}.");
-
-        // Convert results to original indices.
-        let hits = results.into_iter().map(|hits| {
-            hits.into_iter()
-                .map(|(index, distance)| (train.original_index(index), distance))
-                .collect::<Vec<_>>()
-        });
-
-        // Collect query header, hit headers, and hit distances.
-        let hits = hits
-            .zip(query_headers.iter())
-            .map(|(hits, &query)| {
-                (
-                    query.clone(),
-                    hits.into_iter()
-                        .map(|(index, distance)| (train_headers[index].clone(), distance))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<Vec<_>>();
 
         // Create the report.
         let report = Report {
             dataset: stem,
             metric: metric_name,
             cardinality: train.cardinality(),
+            built,
+            build_time,
             shard_sizes: cakes.shard_cardinalities(),
             num_queries: queries.len(),
-            k,
+            kind: "knn",
+            val: k,
             tuned_algorithm,
             throughput,
             linear_throughput,
@@ -174,10 +228,118 @@ fn main() -> Result<(), String> {
         };
 
         // Save the report.
-        report.save(&output_dir)?;
+        report.save(output_dir)?;
+    }
+
+    // Perform range search for each value of r on all queries.
+    for &r in &args.rs {
+        info!("Starting range search with r = {r} ...");
+
+        #[allow(clippy::cast_possible_truncation)]
+        let radius = r as u32;
+
+        // Run the tuned algorithm.
+        let start = Instant::now();
+        let results = cakes.batch_tuned_rnn_search(queries, radius);
+        let search_time = start.elapsed().as_secs_f32();
+        let throughput = queries.len().as_f32() / search_time;
+        info!("With r = {r}, achieved throughput of {throughput:.2e} QPS.");
+
+        // Run the linear search algorithm.
+        let start = Instant::now();
+        let linear_results = cakes.batch_linear_rnn_search(queries, radius);
+        let linear_search_time = start.elapsed().as_secs_f32();
+        let linear_throughput = queries.len().as_f32() / linear_search_time;
+        info!("With r = {r}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
+
+        let (mean_recall, hits) = recall_and_hits(
+            results,
+            linear_results,
+            queries,
+            query_headers,
+            train_headers,
+            train,
+        );
+        info!("With r = {r}, achieved mean recall of {mean_recall:.3}.");
+
+        // Create the report.
+        let report = Report {
+            dataset: stem,
+            metric: metric_name,
+            cardinality: train.cardinality(),
+            built,
+            build_time,
+            shard_sizes: cakes.shard_cardinalities(),
+            num_queries: queries.len(),
+            kind: "rnn",
+            val: r,
+            tuned_algorithm,
+            throughput,
+            linear_throughput,
+            hits,
+            mean_recall,
+        };
+
+        // Save the report.
+        report.save(output_dir)?;
     }
 
     Ok(())
+}
+
+/// Compute the recall and hits of the tuned algorithm.
+///
+/// # Arguments
+///
+/// * `results`: The results of the tuned algorithm.
+/// * `linear_results`: The results of linear search.
+/// * `queries`: The queries.
+/// * `query_headers`: The headers of the queries.
+/// * `train_headers`: The headers of the training set.
+/// * `train`: The training set.
+///
+/// # Returns
+///
+/// * The mean recall of the tuned algorithm.
+/// * The headers of hits of the tuned algorithm.
+#[allow(clippy::type_complexity)]
+fn recall_and_hits(
+    results: Vec<Vec<(usize, u32)>>,
+    linear_results: Vec<Vec<(usize, u32)>>,
+    queries: &[&String],
+    query_headers: &[&String],
+    train_headers: &VecDataset<String, u32>,
+    train: &VecDataset<String, u32>,
+) -> (f32, Vec<(String, Vec<(String, u32)>)>) {
+    // Compute the recall of the tuned algorithm.
+    let mean_recall = results
+        .iter()
+        .zip(linear_results)
+        .map(|(hits, linear_hits)| compute_recall(hits.clone(), linear_hits))
+        .sum::<f32>()
+        / queries.len().as_f32();
+
+    // Convert results to original indices.
+    let hits = results.into_iter().map(|hits| {
+        hits.into_iter()
+            .map(|(index, distance)| (train.original_index(index), distance))
+            .collect::<Vec<_>>()
+    });
+
+    // Collect query header, hit headers, and hit distances.
+    let hits = hits
+        .zip(query_headers.iter())
+        .map(|(hits, &query)| {
+            (
+                query.clone(),
+                hits.into_iter()
+                    .map(|(index, distance)| (train_headers[index].clone(), distance))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    (mean_recall, hits)
 }
 
 /// CLI arguments for the genomic benchmarks.
@@ -205,6 +367,9 @@ struct Args {
     /// Number of nearest neighbors to search for.
     #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "10 100")]
     ks: Vec<usize>,
+    /// Radii to use for range search.
+    #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "25 100 250")]
+    rs: Vec<usize>,
     /// Seed for the random number generator.
     #[arg(long)]
     seed: Option<u64>,
@@ -287,17 +452,22 @@ struct Report<'a> {
     metric: &'a str,
     /// Number of data points in the data set.
     cardinality: usize,
+    /// Whether the search tree was built or loaded from disk.
+    built: bool,
+    /// Time taken to build the search tree or load it from disk.
+    build_time: f32,
     /// Sizes of the shards created for `ShardedCakes`.
     shard_sizes: Vec<usize>,
     /// Number of queries used for search.
     num_queries: usize,
-    /// Number of nearest neighbors to search for.
-    k: usize,
+    /// The kind of search performed. One of "knn" or "rnn".
+    kind: &'a str,
+    /// Value of k used for knn-search or value of r used for range search.
+    val: usize,
     /// Name of the algorithm used after auto-tuning.
     tuned_algorithm: &'a str,
     /// Throughput of the tuned algorithm.
     throughput: f32,
-    // TODO: Include linear search throughput.
     /// Throughput of linear search.
     linear_throughput: f32,
     /// Hits for each query.
@@ -308,8 +478,25 @@ struct Report<'a> {
 
 impl Report<'_> {
     /// Save the report to a file in the given directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir`: The directory to save the report to.
+    ///
+    /// # Errors
+    ///
+    /// * If the directory does not exist or cannot be written to.
+    /// * If the report cannot be serialized.
     fn save(&self, dir: &Path) -> Result<(), String> {
-        let path = dir.join(format!("{}_{}.json", self.dataset, self.k));
+        if !dir.exists() {
+            return Err(format!("Directory {dir:?} does not exist."));
+        }
+
+        if !dir.is_dir() {
+            return Err(format!("{dir:?} is not a directory."));
+        }
+
+        let path = dir.join(format!("{}_{}_{}.json", self.dataset, self.kind, self.val));
         let report = serde_json::to_string_pretty(&self).map_err(|e| e.to_string())?;
         std::fs::write(path, report).map_err(|e| e.to_string())?;
         Ok(())
@@ -332,7 +519,6 @@ pub fn compute_recall<U: Number>(
     mut linear_hits: Vec<(usize, U)>,
 ) -> f32 {
     if linear_hits.is_empty() {
-        warn!("Linear search was too slow. Skipping recall computation.");
         1.0
     } else {
         let (num_hits, num_linear_hits) = (hits.len(), linear_hits.len());

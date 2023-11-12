@@ -7,6 +7,7 @@ use std::{
 };
 
 use abd_clam::{Dataset, VecDataset};
+use distances::Number;
 use log::info;
 use rand::prelude::*;
 
@@ -64,6 +65,31 @@ pub fn silva_to_dataset(
         sequences.len()
     );
 
+    let seq_lengths = sequences.iter().map(String::len).collect::<Vec<_>>();
+    let min_len = seq_lengths
+        .iter()
+        .min()
+        .unwrap_or_else(|| unreachable!("No sequences!"));
+    let max_len = seq_lengths
+        .iter()
+        .max()
+        .unwrap_or_else(|| unreachable!("No sequences!"));
+    let (mean, std_dev) = {
+        let sum = seq_lengths.iter().sum::<usize>().as_f64();
+        let mean = sum / seq_lengths.len().as_f64();
+        let variance = seq_lengths
+            .iter()
+            .map(|&len| (len.as_f64() - mean).powi(2))
+            .sum::<f64>()
+            / seq_lengths.len().as_f64();
+        let std_dev = variance.sqrt();
+        (mean, std_dev)
+    };
+    info!("Minimum sequence length: {min_len}");
+    info!("Maximum sequence length: {max_len}");
+    info!("Mean sequence length: {mean:.3}");
+    info!("Standard deviation of sequence length: {std_dev:.3}");
+
     // Read the headers file.
     let file = File::open(headers_path)
         .map_err(|e| format!("Could not open file {headers_path:?}: {e}"))?;
@@ -76,12 +102,21 @@ pub fn silva_to_dataset(
 
     // join the lines and headers into a single vector of (line, header) pairs.
     let mut sequences = sequences.into_iter().zip(headers).collect::<Vec<_>>();
-    sequences.shuffle(&mut thread_rng());
+
+    // Seed the random number generator.
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    sequences.shuffle(&mut rng);
     info!("Shuffled sequences and headers.");
 
+    // TODO: Remove this for the run on Ark
+    // Keep 1100 sequences
+    sequences.truncate(1100);
+
+    // TODO: Change num_queries to 1000 for the run on Ark
     // Split the lines into the training and query sets.
-    let train = sequences.split_off(1000);
-    let (train, train_headers): (Vec<_>, Vec<_>) = train.into_iter().unzip();
+    let num_queries = 100;
+    let (train, train_headers): (Vec<_>, Vec<_>) =
+        sequences.split_off(num_queries).into_iter().unzip();
     let train = VecDataset::new(format!("{stem}-queries"), train, metric, is_expensive);
     let train_headers = VecDataset::new(
         format!("{stem}-train-headers"),
