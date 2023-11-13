@@ -109,7 +109,7 @@ fn main() -> Result<(), String> {
         (cakes, false, load_time)
     } else {
         let seed = args.seed;
-        let criteria = abd_clam::PartitionCriteria::default();
+        let criteria = abd_clam::PartitionCriteria::new(true).with_min_cardinality(10);
 
         info!("Creating search tree ...");
         let start = Instant::now();
