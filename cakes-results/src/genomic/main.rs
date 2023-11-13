@@ -102,9 +102,9 @@ fn main() -> Result<(), String> {
         let load_time = start.elapsed().as_secs_f32();
         info!("Loaded search tree in {load_time:.2e} seconds.");
 
-        let tuned_algorithm = cakes.tuned_knn_algorithm();
-        let tuned_algorithm = tuned_algorithm.name();
-        info!("Tuned algorithm is {tuned_algorithm}");
+        // let tuned_algorithm = cakes.tuned_knn_algorithm();
+        // let tuned_algorithm = tuned_algorithm.name();
+        // info!("Tuned algorithm is {tuned_algorithm}");
 
         (cakes, false, load_time)
     } else {
@@ -113,28 +113,28 @@ fn main() -> Result<(), String> {
 
         info!("Creating search tree ...");
         let start = Instant::now();
-        let mut cakes = Cakes::new(train, seed, &criteria);
+        let cakes = Cakes::new(train, seed, &criteria);
         let build_time = start.elapsed().as_secs_f32();
         info!("Created search tree in {build_time:.2e} seconds.");
 
-        let tuning_depth = args.tuning_depth;
-        let tuning_k = args.tuning_k;
-        info!("Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
+        // let tuning_depth = args.tuning_depth;
+        // let tuning_k = args.tuning_k;
+        // info!("Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
 
-        let start = Instant::now();
-        cakes.auto_tune_knn(tuning_depth, tuning_k);
-        let tuning_time = start.elapsed().as_secs_f32();
-        info!("Tuned knn-search in {tuning_time:.2e} seconds.");
+        // let start = Instant::now();
+        // cakes.auto_tune_knn(tuning_depth, tuning_k);
+        // let tuning_time = start.elapsed().as_secs_f32();
+        // info!("Tuned knn-search in {tuning_time:.2e} seconds.");
 
-        let tuned_algorithm = cakes.tuned_knn_algorithm();
-        let tuned_algorithm = tuned_algorithm.name();
-        info!("Tuned algorithm is {tuned_algorithm}");
+        // let tuned_algorithm = cakes.tuned_knn_algorithm();
+        // let tuned_algorithm = tuned_algorithm.name();
+        // info!("Tuned algorithm is {tuned_algorithm}");
 
         // Save the Cakes data structure.
         std::fs::create_dir(&cakes_dir).map_err(|e| e.to_string())?;
         cakes.save(&cakes_dir)?;
 
-        (cakes, true, build_time + tuning_time)
+        (cakes, true, build_time)
     };
 
     measure_throughput(
