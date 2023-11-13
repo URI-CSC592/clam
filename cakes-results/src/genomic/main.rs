@@ -15,10 +15,14 @@
     clippy::cast_lossless
 )]
 #![allow(unused_imports)]
+#![allow(clippy::cast_possible_truncation)]
 
 //! Cakes benchmarks on genomic datasets.
 
+mod metrics;
+mod nucleotides;
 mod read_silva;
+mod sequence;
 
 use core::cmp::Ordering;
 use std::{
@@ -26,11 +30,14 @@ use std::{
     time::Instant,
 };
 
-use abd_clam::{Cakes, Dataset, Instance, VecDataset};
+use abd_clam::{knn, rnn, Cakes, Dataset, Instance, VecDataset};
 use clap::Parser;
 use distances::Number;
 use log::{debug, info, warn};
+use sequence::Sequence;
 use serde::{Deserialize, Serialize};
+
+use crate::nucleotides::Nucleotide;
 
 fn main() -> Result<(), String> {
     env_logger::Builder::from_default_env()
@@ -68,7 +75,7 @@ fn main() -> Result<(), String> {
         return Err(format!("Output directory {output_dir:?} does not exist."));
     }
 
-    let [train, queries, train_headers, query_headers] =
+    let [(train, train_headers), (queries, query_headers)] =
         read_silva::silva_to_dataset(&unaligned_path, &headers_path, metric, is_expensive)?;
     info!(
         "Read {} data set. Cardinality: {}",
@@ -163,104 +170,125 @@ fn main() -> Result<(), String> {
 /// # Errors
 ///
 /// * If the `output_dir` does not exist or cannot be written to.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn measure_throughput(
-    cakes: &Cakes<String, u32, VecDataset<String, u32>>,
+    cakes: &Cakes<Sequence, u32, VecDataset<Sequence, u32>>,
     built: bool,
     build_time: f32,
     args: &Args,
-    queries: &[&String],
+    queries: &[&Sequence],
     query_headers: &[&String],
     train_headers: &VecDataset<String, u32>,
     stem: &str,
     metric_name: &str,
     output_dir: &Path,
 ) -> Result<(), String> {
-    let tuned_algorithm = cakes.tuned_knn_algorithm();
-    let tuned_algorithm = tuned_algorithm.name();
-
     let train = cakes.shards()[0];
+
+    let num_linear_queries = 10;
+
+    // Run the linear search algorithm.
+    let k = args
+        .ks
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or_else(|| unreachable!("No ks!"));
+    let start = Instant::now();
+    let linear_results = cakes.batch_linear_knn_search(&queries[..num_linear_queries], k);
+    let linear_search_time = start.elapsed().as_secs_f32();
+    let linear_throughput = queries.len().as_f32() / linear_search_time;
+    let linear_throughput = linear_throughput / num_linear_queries.as_f32();
+    info!("With k = {k}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
 
     // Perform knn-search for each value of k on all queries.
     for &k in &args.ks {
         info!("Starting knn-search with k = {k} ...");
 
-        // Run the tuned algorithm.
-        let start = Instant::now();
-        let results = cakes.batch_tuned_knn_search(queries, k);
-        let search_time = start.elapsed().as_secs_f32();
-        let throughput = queries.len().as_f32() / search_time;
-        info!("With k = {k}, achieved throughput of {throughput:.2e} QPS.");
+        // Run each algorithm.
+        for &algorithm in knn::Algorithm::variants() {
+            let start = Instant::now();
+            let results = cakes.batch_knn_search(queries, k, algorithm);
+            let search_time = start.elapsed().as_secs_f32();
+            let throughput = queries.len().as_f32() / search_time;
+            info!(
+                "With k = {k}, {} achieved throughput of {throughput:.2e} QPS.",
+                algorithm.name()
+            );
 
-        // Run the linear search algorithm.
-        let start = Instant::now();
-        let linear_results = cakes.batch_linear_knn_search(queries, k);
-        let linear_search_time = start.elapsed().as_secs_f32();
-        let linear_throughput = queries.len().as_f32() / linear_search_time;
-        info!("With k = {k}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
+            let (mean_recall, _) = recall_and_hits(
+                results,
+                &linear_results,
+                query_headers,
+                train_headers,
+                train,
+            );
+            debug!("With k = {k}, achieved mean recall of {mean_recall:.3}.");
 
-        let (mean_recall, hits) = recall_and_hits(
-            results,
-            linear_results,
-            queries,
-            query_headers,
-            train_headers,
-            train,
-        );
-        info!("With k = {k}, achieved mean recall of {mean_recall:.3}.");
+            // Create the report.
+            let report = Report {
+                dataset: stem,
+                metric: metric_name,
+                cardinality: train.cardinality(),
+                built,
+                build_time,
+                shard_sizes: cakes.shard_cardinalities(),
+                num_queries: queries.len(),
+                kind: "knn",
+                val: k,
+                algorithm: algorithm.name(),
+                throughput,
+                linear_throughput,
+                // hits,
+                // mean_recall,
+            };
 
-        // Create the report.
-        let report = Report {
-            dataset: stem,
-            metric: metric_name,
-            cardinality: train.cardinality(),
-            built,
-            build_time,
-            shard_sizes: cakes.shard_cardinalities(),
-            num_queries: queries.len(),
-            kind: "knn",
-            val: k,
-            tuned_algorithm,
-            throughput,
-            linear_throughput,
-            hits,
-            mean_recall,
-        };
-
-        // Save the report.
-        report.save(output_dir)?;
+            // Save the report.
+            report.save(output_dir)?;
+        }
     }
 
-    // Perform range search for each value of r on all queries.
-    for &r in &args.rs {
-        info!("Starting range search with r = {r} ...");
+    // Run the linear search algorithm.
+    let radius = args
+        .rs
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or_else(|| unreachable!("No radii!")) as u32
+        * Nucleotide::gap_penalty();
+    let start = Instant::now();
+    let linear_results = cakes.batch_linear_rnn_search(&queries[..num_linear_queries], radius);
+    let linear_search_time = start.elapsed().as_secs_f32();
+    let linear_throughput = queries.len().as_f32() / linear_search_time;
+    let linear_throughput = linear_throughput / num_linear_queries.as_f32();
+    info!("Linear rnn search throughput of {linear_throughput:.2e} QPS.",);
 
-        #[allow(clippy::cast_possible_truncation)]
-        let radius = r as u32;
+    // Perform range search for each value of r on all queries.
+    for r in args
+        .rs
+        .iter()
+        .map(|&r| r as u32 * Nucleotide::gap_penalty())
+    {
+        info!("Starting range search with r = {r} ...");
 
         // Run the tuned algorithm.
         let start = Instant::now();
-        let results = cakes.batch_tuned_rnn_search(queries, radius);
+        let results = cakes.batch_rnn_search(queries, radius, rnn::Algorithm::Clustered);
         let search_time = start.elapsed().as_secs_f32();
         let throughput = queries.len().as_f32() / search_time;
-        info!("With r = {r}, achieved throughput of {throughput:.2e} QPS.");
+        info!(
+            "With r = {r}, {} achieved throughput of {throughput:.2e} QPS.",
+            rnn::Algorithm::Clustered.name()
+        );
 
-        // Run the linear search algorithm.
-        let start = Instant::now();
-        let linear_results = cakes.batch_linear_rnn_search(queries, radius);
-        let linear_search_time = start.elapsed().as_secs_f32();
-        let linear_throughput = queries.len().as_f32() / linear_search_time;
-        info!("With r = {r}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
-
-        let (mean_recall, hits) = recall_and_hits(
+        let (mean_recall, _) = recall_and_hits(
             results,
-            linear_results,
-            queries,
+            &linear_results,
             query_headers,
             train_headers,
             train,
         );
-        info!("With r = {r}, achieved mean recall of {mean_recall:.3}.");
+        debug!("With r = {r}, achieved mean recall of {mean_recall:.3}.");
 
         // Create the report.
         let report = Report {
@@ -272,12 +300,12 @@ fn measure_throughput(
             shard_sizes: cakes.shard_cardinalities(),
             num_queries: queries.len(),
             kind: "rnn",
-            val: r,
-            tuned_algorithm,
+            val: r as usize,
+            algorithm: rnn::Algorithm::Clustered.name(),
             throughput,
             linear_throughput,
-            hits,
-            mean_recall,
+            // hits,
+            // mean_recall,
         };
 
         // Save the report.
@@ -305,19 +333,18 @@ fn measure_throughput(
 #[allow(clippy::type_complexity)]
 fn recall_and_hits(
     results: Vec<Vec<(usize, u32)>>,
-    linear_results: Vec<Vec<(usize, u32)>>,
-    queries: &[&String],
+    linear_results: &[Vec<(usize, u32)>],
     query_headers: &[&String],
     train_headers: &VecDataset<String, u32>,
-    train: &VecDataset<String, u32>,
+    train: &VecDataset<Sequence, u32>,
 ) -> (f32, Vec<(String, Vec<(String, u32)>)>) {
     // Compute the recall of the tuned algorithm.
     let mean_recall = results
         .iter()
         .zip(linear_results)
-        .map(|(hits, linear_hits)| compute_recall(hits.clone(), linear_hits))
+        .map(|(hits, linear_hits)| compute_recall(hits.clone(), linear_hits.clone()))
         .sum::<f32>()
-        / queries.len().as_f32();
+        / linear_results.len().as_f32();
 
     // Convert results to original indices.
     let hits = results.into_iter().map(|hits| {
@@ -408,11 +435,11 @@ impl Metric {
 
     /// Return the metric function.
     #[allow(clippy::ptr_arg)]
-    fn metric(&self) -> fn(&String, &String) -> u32 {
+    fn metric(&self) -> fn(&Sequence, &Sequence) -> u32 {
         match self {
-            Self::Hamming => hamming,
-            Self::Levenshtein => levenshtein,
-            Self::NeedlemanWunsch => needleman_wunsch,
+            Self::Hamming => metrics::hamming,
+            Self::Levenshtein => metrics::levenshtein,
+            Self::NeedlemanWunsch => metrics::needleman_wunsch,
         }
     }
 
@@ -425,23 +452,23 @@ impl Metric {
     }
 }
 
-/// Compute the Hamming distance between two strings.
-#[allow(clippy::ptr_arg)]
-fn hamming(x: &String, y: &String) -> u32 {
-    distances::strings::hamming(x, y)
-}
+// /// Compute the Hamming distance between two strings.
+// #[allow(clippy::ptr_arg)]
+// fn hamming(x: &String, y: &String) -> u32 {
+//     distances::strings::hamming(x, y)
+// }
 
-/// Compute the Levenshtein distance between two strings.
-#[allow(clippy::ptr_arg)]
-fn levenshtein(x: &String, y: &String) -> u32 {
-    distances::strings::levenshtein(x, y)
-}
+// /// Compute the Levenshtein distance between two strings.
+// #[allow(clippy::ptr_arg)]
+// fn levenshtein(x: &String, y: &String) -> u32 {
+//     distances::strings::levenshtein(x, y)
+// }
 
-/// Compute the Needleman-Wunsch distance between two strings.
-#[allow(clippy::ptr_arg)]
-fn needleman_wunsch(x: &String, y: &String) -> u32 {
-    distances::strings::needleman_wunsch::nw_distance(x, y)
-}
+// /// Compute the Needleman-Wunsch distance between two strings.
+// #[allow(clippy::ptr_arg)]
+// fn needleman_wunsch(x: &String, y: &String) -> u32 {
+//     distances::strings::needleman_wunsch::nw_distance(x, y)
+// }
 
 /// A report of the results of an ANN benchmark.
 #[derive(Debug, Serialize, Deserialize)]
@@ -464,16 +491,16 @@ struct Report<'a> {
     kind: &'a str,
     /// Value of k used for knn-search or value of r used for range search.
     val: usize,
-    /// Name of the algorithm used after auto-tuning.
-    tuned_algorithm: &'a str,
+    /// Name of the algorithm used.
+    algorithm: &'a str,
     /// Throughput of the tuned algorithm.
     throughput: f32,
     /// Throughput of linear search.
     linear_throughput: f32,
-    /// Hits for each query.
-    hits: Vec<(String, Vec<(String, u32)>)>,
-    /// Mean recall of the tuned algorithm.
-    mean_recall: f32,
+    // /// Hits for each query.
+    // hits: Vec<(String, Vec<(String, u32)>)>,
+    // /// Mean recall of the tuned algorithm.
+    // mean_recall: f32,
 }
 
 impl Report<'_> {
@@ -496,7 +523,10 @@ impl Report<'_> {
             return Err(format!("{dir:?} is not a directory."));
         }
 
-        let path = dir.join(format!("{}_{}_{}.json", self.dataset, self.kind, self.val));
+        let path = dir.join(format!(
+            "{}_{}_{}_{}.json",
+            self.dataset, self.kind, self.algorithm, self.val
+        ));
         let report = serde_json::to_string_pretty(&self).map_err(|e| e.to_string())?;
         std::fs::write(path, report).map_err(|e| e.to_string())?;
         Ok(())
@@ -518,7 +548,9 @@ pub fn compute_recall<U: Number>(
     mut hits: Vec<(usize, U)>,
     mut linear_hits: Vec<(usize, U)>,
 ) -> f32 {
-    if linear_hits.is_empty() {
+    // TODO: Remove the empty check on `hits` and only keep the empty check on
+    // `linear_hits`?
+    if linear_hits.is_empty() || hits.is_empty() {
         1.0
     } else {
         let (num_hits, num_linear_hits) = (hits.len(), linear_hits.len());
@@ -542,7 +574,9 @@ pub fn compute_recall<U: Number>(
                 linear_hits.next();
             }
         }
-        let recall = num_common.as_f32() / num_linear_hits.as_f32();
+
+        // TODO: divide by the number of linear hits?
+        let recall = num_common.as_f32() / num_hits.as_f32();
         debug!("Recall: {recall:.3}, num_common: {num_common}");
 
         recall

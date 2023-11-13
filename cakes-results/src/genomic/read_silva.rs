@@ -10,6 +10,13 @@ use abd_clam::{Dataset, VecDataset};
 use distances::Number;
 use log::info;
 use rand::prelude::*;
+use rayon::prelude::*;
+
+use crate::sequence::Sequence;
+
+/// A pair of datasets. The first contains the sequences, the second contains
+/// the headers.
+type DataPair = (VecDataset<Sequence, u32>, VecDataset<String, u32>);
 
 /// Read the Silva-18S dataset from the given path.
 ///
@@ -41,9 +48,9 @@ use rand::prelude::*;
 pub fn silva_to_dataset(
     unaligned_path: &Path,
     headers_path: &Path,
-    metric: fn(&String, &String) -> u32,
+    metric: fn(&Sequence, &Sequence) -> u32,
     is_expensive: bool,
-) -> Result<[VecDataset<String, u32>; 4], String> {
+) -> Result<[DataPair; 2], String> {
     // Get the stem of the file name.
     let stem = unaligned_path
         .file_stem()
@@ -100,6 +107,12 @@ pub fn silva_to_dataset(
         .collect::<Result<Vec<_>, _>>()?;
     info!("Read {} headers from {headers_path:?}.", headers.len());
 
+    // Convert the lines into sequences.
+    let sequences = sequences
+        .par_iter()
+        .map(|s| Sequence::from_str(s))
+        .collect::<Result<Vec<_>, _>>()?;
+
     // join the lines and headers into a single vector of (line, header) pairs.
     let mut sequences = sequences.into_iter().zip(headers).collect::<Vec<_>>();
 
@@ -121,7 +134,7 @@ pub fn silva_to_dataset(
     let train_headers = VecDataset::new(
         format!("{stem}-train-headers"),
         train_headers,
-        metric,
+        |_, _| 0,
         is_expensive,
     );
     info!(
@@ -134,7 +147,7 @@ pub fn silva_to_dataset(
     let query_headers = VecDataset::new(
         format!("{stem}-query-headers"),
         query_headers,
-        metric,
+        |_, _| 0,
         is_expensive,
     );
     info!(
@@ -145,5 +158,5 @@ pub fn silva_to_dataset(
     assert_eq!(train.cardinality(), train_headers.cardinality());
     assert_eq!(queries.cardinality(), query_headers.cardinality());
 
-    Ok([train, queries, train_headers, query_headers])
+    Ok([(train, train_headers), (queries, query_headers)])
 }

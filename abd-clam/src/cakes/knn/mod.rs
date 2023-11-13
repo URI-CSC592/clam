@@ -162,10 +162,10 @@ impl Algorithm {
         }
     }
 
-    /// Returns a list of all the algorithms, excluding Linear.
+    /// Returns a list of all the algorithms, excluding `Linear` and `RepeatedRnn`.
     #[must_use]
     pub const fn variants<'a>() -> &'a [Self] {
-        &[Self::RepeatedRnn, Self::GreedySieve, Self::Sieve, Self::SieveSepCenter]
+        &[Self::GreedySieve, Self::Sieve, Self::SieveSepCenter]
     }
 }
 
