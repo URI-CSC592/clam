@@ -5,7 +5,7 @@ use std::{path::Path, time::Instant};
 use abd_clam::{knn, Cakes, PartitionCriteria, VecDataset};
 use clap::Parser;
 use distances::Number;
-use log::{error, info, warn};
+use mt_logger::*;
 use num_format::ToFormattedString;
 use serde::{Deserialize, Serialize};
 use symagen::augmentation;
@@ -16,9 +16,7 @@ mod utils;
 use crate::{ann_datasets::AnnDatasets, utils::format_f32};
 
 fn main() -> Result<(), String> {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    mt_new!(None, Level::Info, OutputStream::StdOut);
 
     let args = Args::parse();
 
@@ -53,6 +51,8 @@ fn main() -> Result<(), String> {
         &args.ks,
         args.max_memory,
     )?;
+
+    mt_flush!().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -134,23 +134,26 @@ pub fn make_reports(
     let metric = dataset.metric()?;
     let [train_data, queries] = dataset.read(input_dir)?;
 
-    info!("Dataset: {}", dataset.name());
+    mt_log!(Level::Info, "Dataset: {}", dataset.name());
 
     let base_cardinality = train_data.len();
-    info!(
+    mt_log!(
+        Level::Info,
         "Base cardinality: {}",
         base_cardinality.to_formatted_string(&num_format::Locale::en)
     );
 
     let dimensionality = train_data[0].len();
-    info!(
+    mt_log!(
+        Level::Info,
         "Dimensionality: {}",
         dimensionality.to_formatted_string(&num_format::Locale::en)
     );
 
     let queries = queries.iter().take(1000).collect::<Vec<_>>();
     let num_queries = queries.len();
-    info!(
+    mt_log!(
+        Level::Info,
         "Number of queries: {}",
         num_queries.to_formatted_string(&num_format::Locale::en)
     );
@@ -187,9 +190,9 @@ pub fn make_reports(
         .map_err(|e| e.to_string())?;
 
     for multiplier in (0..=max_scale).map(|s| 2_usize.pow(s)) {
-        info!("");
-        info!("Scaling data by a factor of {}.", multiplier);
-        info!("Error rate: {}", error_rate);
+        mt_log!(Level::Info, "");
+        mt_log!(Level::Info, "Scaling data by a factor of {}.", multiplier);
+        mt_log!(Level::Info, "Error rate: {}", error_rate);
 
         let data = if multiplier == 1 {
             train_data.clone()
@@ -197,7 +200,10 @@ pub fn make_reports(
             // If memory cost would be too high, continue to next scale.
             let memory_cost = memory_cost(base_cardinality * multiplier, dimensionality);
             if memory_cost > max_memory * 1024 * 1024 * 1024 {
-                warn!("Memory cost would be over 256G. Skipping scale {multiplier}.");
+                mt_log!(
+                    Level::Warning,
+                    "Memory cost would be over 256G. Skipping scale {multiplier}."
+                );
                 continue;
             }
 
@@ -205,7 +211,8 @@ pub fn make_reports(
         };
 
         let cardinality = data.len();
-        info!(
+        mt_log!(
+            Level::Info,
             "Scaled cardinality: {}",
             cardinality.to_formatted_string(&num_format::Locale::en)
         );
@@ -217,13 +224,17 @@ pub fn make_reports(
         let start = Instant::now();
         let cakes = Cakes::new(data, seed, &criteria);
         let cakes_time = start.elapsed().as_secs_f32();
-        info!("Cakes tree-building time: {:.3e} s", cakes_time);
+        mt_log!(
+            Level::Info,
+            "Cakes tree-building time: {:.3e} s",
+            cakes_time
+        );
 
         let mut prev_linear_throughput = 1_000.0;
         let linear_throughput_threshold = 50.0;
 
         for &k in ks {
-            info!("k: {}", k);
+            mt_log!(Level::Info, "k: {}", k);
 
             #[allow(unused_variables)]
             let (linear_hits, linear_throughput) =
@@ -231,11 +242,18 @@ pub fn make_reports(
                     // Measure throughput of linear search.
                     let (linear_hits, linear_throughput) =
                         measure_algorithm(&cakes, &queries, ks[0], knn::Algorithm::Linear);
-                    info!("Linear throughput: {} QPS", format_f32(linear_throughput));
+                    mt_log!(
+                        Level::Info,
+                        "Linear throughput: {} QPS",
+                        format_f32(linear_throughput)
+                    );
                     prev_linear_throughput = linear_throughput;
                     (linear_hits, linear_throughput)
                 } else {
-                    warn!("Linear throughput is too low. Skipping linear search.");
+                    mt_log!(
+                        Level::Warning,
+                        "Linear throughput is too low. Skipping linear search."
+                    );
                     (Vec::new(), prev_linear_throughput)
                 };
 
@@ -250,10 +268,10 @@ pub fn make_reports(
             )?;
 
             for &algorithm in knn::Algorithm::variants() {
-                info!("Algorithm: {}, k: {}", algorithm.name(), k);
+                mt_log!(Level::Info, "Algorithm: {}, k: {}", algorithm.name(), k);
 
                 let (hits, throughput) = measure_algorithm(&cakes, &queries, k, algorithm);
-                info!("Throughput: {} QPS", format_f32(throughput));
+                mt_log!(Level::Info, "Throughput: {} QPS", format_f32(throughput));
 
                 let misses = hits
                     .iter()
@@ -265,7 +283,8 @@ pub fn make_reports(
                         .iter()
                         .min()
                         .unwrap_or_else(|| unreachable!("`misses` is not empty."));
-                    error!(
+                    mt_log!(
+                        Level::Warning,
                         "{} queries returned as low as {} neighbors.",
                         misses.len(),
                         min_hits
@@ -278,7 +297,7 @@ pub fn make_reports(
                     .map(|(h, l)| utils::compute_recall(h, l))
                     .sum::<f32>()
                     / linear_hits.len().as_f32();
-                info!("Mean recall: {}", format_f32(mean_recall));
+                mt_log!(Level::Info, "Mean recall: {}", format_f32(mean_recall));
 
                 line_to_csv(
                     &mut csv_writer,

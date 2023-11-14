@@ -24,7 +24,7 @@ use std::{path::Path, time::Instant};
 use abd_clam::{Cakes, Dataset, PartitionCriteria, VecDataset};
 use clap::Parser;
 use distances::Number;
-use log::info;
+use mt_logger::{mt_flush, mt_log, mt_new, Level, OutputStream};
 use num_format::ToFormattedString;
 use serde::{Deserialize, Serialize};
 
@@ -34,9 +34,7 @@ mod utils;
 use crate::{ann_datasets::AnnDatasets, utils::format_f32};
 
 fn main() -> Result<(), String> {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    mt_new!(None, Level::Info, OutputStream::StdOut);
 
     let args = Args::parse();
 
@@ -69,6 +67,8 @@ fn main() -> Result<(), String> {
         args.seed,
         &args.output_dir,
     )?;
+
+    mt_flush!().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -119,26 +119,29 @@ fn make_reports(
     seed: Option<u64>,
     output_dir: &Path,
 ) -> Result<(), String> {
-    info!("");
+    mt_log!(Level::Info, "");
 
     let dataset = AnnDatasets::from_str(dataset)?;
     let metric = dataset.metric()?;
     let [train_data, queries] = dataset.read(input_dir)?;
-    info!("Dataset: {}", dataset.name());
+    mt_log!(Level::Info, "Dataset: {}", dataset.name());
 
     let (cardinality, dimensionality) = (train_data.len(), train_data[0].len());
-    info!(
+    mt_log!(
+        Level::Info,
         "Cardinality: {}",
         cardinality.to_formatted_string(&num_format::Locale::en)
     );
-    info!(
+    mt_log!(
+        Level::Info,
         "Dimensionality: {}",
         dimensionality.to_formatted_string(&num_format::Locale::en)
     );
 
     let queries = queries.iter().collect::<Vec<_>>();
     let num_queries = queries.len();
-    info!(
+    mt_log!(
+        Level::Info,
         "Number of queries: {}",
         num_queries.to_formatted_string(&num_format::Locale::en)
     );
@@ -165,7 +168,8 @@ fn make_reports(
     };
 
     let shard_sizes = cakes.shard_cardinalities();
-    info!(
+    mt_log!(
+        Level::Info,
         "Shard sizes: [{}]",
         shard_sizes
             .iter()
@@ -175,25 +179,33 @@ fn make_reports(
     );
 
     let algorithm = cakes.tuned_knn_algorithm();
-    info!("Tuned algorithm: {}", algorithm.name());
+    mt_log!(Level::Info, "Tuned algorithm: {}", algorithm.name());
 
     for k in ks {
-        info!("k: {k}");
+        mt_log!(Level::Info, "k: {k}");
 
         let start = Instant::now();
         let hits = cakes.batch_tuned_knn_search(&queries, k);
         let elapsed = start.elapsed().as_secs_f32();
         let throughput = queries.len().as_f32() / elapsed;
-        info!("Throughput: {} QPS", format_f32(throughput));
+        mt_log!(Level::Info, "Throughput: {} QPS", format_f32(throughput));
 
         let start = Instant::now();
         let linear_hits = cakes.batch_linear_knn_search(&queries, k);
         let linear_elapsed = start.elapsed().as_secs_f32();
         let linear_throughput = queries.len().as_f32() / linear_elapsed;
-        info!("Linear throughput: {} QPS", format_f32(linear_throughput));
+        mt_log!(
+            Level::Info,
+            "Linear throughput: {} QPS",
+            format_f32(linear_throughput)
+        );
 
         let speedup_factor = throughput / linear_throughput;
-        info!("Speedup factor: {}", format_f32(speedup_factor));
+        mt_log!(
+            Level::Info,
+            "Speedup factor: {}",
+            format_f32(speedup_factor)
+        );
 
         let recall = hits
             .into_iter()
@@ -201,7 +213,7 @@ fn make_reports(
             .map(|(hits, linear_hits)| utils::compute_recall(hits, linear_hits))
             .sum::<f32>()
             / queries.len().as_f32();
-        info!("Recall: {}", format_f32(recall));
+        mt_log!(Level::Info, "Recall: {}", format_f32(recall));
 
         Report {
             dataset: dataset.name(),

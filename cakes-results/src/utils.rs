@@ -3,7 +3,7 @@
 use core::cmp::Ordering;
 
 use distances::Number;
-use log::{debug, warn};
+use mt_logger::{mt_log, Level};
 use num_format::ToFormattedString;
 
 /// Format a `f32` as a string with 6 digits of precision and separators.
@@ -42,11 +42,17 @@ pub fn compute_recall<U: Number>(
     mut linear_hits: Vec<(usize, U)>,
 ) -> f32 {
     if linear_hits.is_empty() {
-        warn!("Linear search was too slow. Skipping recall computation.");
+        mt_log!(
+            Level::Warning,
+            "Linear search was too slow. Skipping recall computation."
+        );
         1.0
     } else {
         let (num_hits, num_linear_hits) = (hits.len(), linear_hits.len());
-        debug!("Num Hits: {num_hits}, Num Linear Hits: {num_linear_hits}");
+        mt_log!(
+            Level::Debug,
+            "Num Hits: {num_hits}, Num Linear Hits: {num_linear_hits}"
+        );
 
         hits.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Greater));
         let mut hits = hits.into_iter().map(|(_, d)| d).peekable();
@@ -67,7 +73,12 @@ pub fn compute_recall<U: Number>(
             }
         }
         let recall = num_common.as_f32() / num_linear_hits.as_f32();
-        debug!("Recall: {}, num_common: {}", format_f32(recall), num_common);
+        mt_log!(
+            Level::Debug,
+            "Recall: {}, num_common: {}",
+            format_f32(recall),
+            num_common
+        );
 
         recall
     }

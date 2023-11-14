@@ -33,23 +33,21 @@ use std::{
 use abd_clam::{knn, rnn, Cakes, Dataset, Instance, VecDataset};
 use clap::Parser;
 use distances::Number;
-use log::{debug, info, warn};
+use mt_logger::{mt_flush, mt_log, mt_new, Level, OutputStream};
 use sequence::Sequence;
 use serde::{Deserialize, Serialize};
 
 use crate::nucleotides::Nucleotide;
 
 fn main() -> Result<(), String> {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    mt_new!(None, Level::Info, OutputStream::Both);
 
     let args = Args::parse();
 
     // Parse the metric.
     let metric = Metric::from_str(&args.metric)?;
     let metric_name = metric.name();
-    info!("Using metric: {metric_name}");
+    mt_log!(Level::Info, "Using metric: {metric_name}");
 
     let is_expensive = metric.is_expensive();
     let metric = metric.metric();
@@ -67,7 +65,7 @@ fn main() -> Result<(), String> {
         }
     }
     let [unaligned_path, _, headers_path] = data_paths;
-    info!("Using data from {unaligned_path:?}.");
+    mt_log!(Level::Info, "Using data from {unaligned_path:?}.");
 
     // Check that the output directory exists.
     let output_dir = &args.output_dir;
@@ -77,18 +75,28 @@ fn main() -> Result<(), String> {
 
     let [(train, train_headers), (queries, query_headers)] =
         read_silva::silva_to_dataset(&unaligned_path, &headers_path, metric, is_expensive)?;
-    info!(
+    mt_log!(
+        Level::Info,
         "Read {} data set. Cardinality: {}",
         train.name(),
         train.cardinality()
     );
-    info!(
+    mt_log!(
+        Level::Info,
         "Read {} query set. Cardinality: {}",
         queries.name(),
         queries.cardinality()
     );
-    info!("Read {} training set headers.", train_headers.cardinality());
-    info!("Read {} query set headers.", query_headers.cardinality());
+    mt_log!(
+        Level::Info,
+        "Read {} training set headers.",
+        train_headers.cardinality()
+    );
+    mt_log!(
+        Level::Info,
+        "Read {} query set headers.",
+        query_headers.cardinality()
+    );
 
     let queries = queries.data().iter().collect::<Vec<_>>();
     let query_headers = query_headers.data().iter().collect::<Vec<_>>();
@@ -96,15 +104,18 @@ fn main() -> Result<(), String> {
     // Check if the cakes data structure already exists.
     let cakes_dir = args.input_dir.join(format!("{stem}-cakes"));
     let (cakes, built, build_time) = if cakes_dir.exists() {
-        info!("Loading search tree from {cakes_dir:?} ...");
+        mt_log!(Level::Info, "Loading search tree from {cakes_dir:?} ...");
         let start = Instant::now();
         let cakes = Cakes::load(&cakes_dir, metric, is_expensive)?;
         let load_time = start.elapsed().as_secs_f32();
-        info!("Loaded search tree in {load_time:.2e} seconds.");
+        mt_log!(
+            Level::Info,
+            "Loaded search tree in {load_time:.2e} seconds."
+        );
 
         // let tuned_algorithm = cakes.tuned_knn_algorithm();
         // let tuned_algorithm = tuned_algorithm.name();
-        // info!("Tuned algorithm is {tuned_algorithm}");
+        // mt_log!(Level::Info, "Tuned algorithm is {tuned_algorithm}");
 
         (cakes, false, load_time)
     } else {
@@ -113,24 +124,27 @@ fn main() -> Result<(), String> {
             .with_min_cardinality(10)
             .with_max_depth(128);
 
-        info!("Creating search tree ...");
+        mt_log!(Level::Info, "Creating search tree ...");
         let start = Instant::now();
         let cakes = Cakes::new(train, seed, &criteria);
         let build_time = start.elapsed().as_secs_f32();
-        info!("Created search tree in {build_time:.2e} seconds.");
+        mt_log!(
+            Level::Info,
+            "Created search tree in {build_time:.2e} seconds."
+        );
 
         // let tuning_depth = args.tuning_depth;
         // let tuning_k = args.tuning_k;
-        // info!("Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
+        // mt_log!(Level::Info, "Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
 
         // let start = Instant::now();
         // cakes.auto_tune_knn(tuning_depth, tuning_k);
         // let tuning_time = start.elapsed().as_secs_f32();
-        // info!("Tuned knn-search in {tuning_time:.2e} seconds.");
+        // mt_log!(Level::Info, "Tuned knn-search in {tuning_time:.2e} seconds.");
 
         // let tuned_algorithm = cakes.tuned_knn_algorithm();
         // let tuned_algorithm = tuned_algorithm.name();
-        // info!("Tuned algorithm is {tuned_algorithm}");
+        // mt_log!(Level::Info, "Tuned algorithm is {tuned_algorithm}");
 
         // Save the Cakes data structure.
         std::fs::create_dir(&cakes_dir).map_err(|e| e.to_string())?;
@@ -150,7 +164,11 @@ fn main() -> Result<(), String> {
         stem,
         metric_name,
         output_dir,
-    )
+    )?;
+
+    mt_flush!().map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Measure the throughput of the tuned algorithm.
@@ -201,11 +219,14 @@ fn measure_throughput(
     let linear_search_time = start.elapsed().as_secs_f32();
     let linear_throughput = queries.len().as_f32() / linear_search_time;
     let linear_throughput = linear_throughput / num_linear_queries.as_f32();
-    info!("With k = {k}, achieved linear search throughput of {linear_throughput:.2e} QPS.",);
+    mt_log!(
+        Level::Info,
+        "With k = {k}, achieved linear search throughput of {linear_throughput:.2e} QPS."
+    );
 
     // Perform knn-search for each value of k on all queries.
     for &k in &args.ks {
-        info!("Starting knn-search with k = {k} ...");
+        mt_log!(Level::Info, "Starting knn-search with k = {k} ...");
 
         // Run each algorithm.
         for &algorithm in knn::Algorithm::variants() {
@@ -213,7 +234,8 @@ fn measure_throughput(
             let results = cakes.batch_knn_search(queries, k, algorithm);
             let search_time = start.elapsed().as_secs_f32();
             let throughput = queries.len().as_f32() / search_time;
-            info!(
+            mt_log!(
+                Level::Info,
                 "With k = {k}, {} achieved throughput of {throughput:.2e} QPS.",
                 algorithm.name()
             );
@@ -225,7 +247,10 @@ fn measure_throughput(
                 train_headers,
                 train,
             );
-            debug!("With k = {k}, achieved mean recall of {mean_recall:.3}.");
+            mt_log!(
+                Level::Debug,
+                "With k = {k}, achieved mean recall of {mean_recall:.3}."
+            );
 
             // Create the report.
             let report = Report {
@@ -263,7 +288,10 @@ fn measure_throughput(
     let linear_search_time = start.elapsed().as_secs_f32();
     let linear_throughput = queries.len().as_f32() / linear_search_time;
     let linear_throughput = linear_throughput / num_linear_queries.as_f32();
-    info!("Linear rnn search throughput of {linear_throughput:.2e} QPS.",);
+    mt_log!(
+        Level::Info,
+        "Linear rnn search throughput of {linear_throughput:.2e} QPS."
+    );
 
     // Perform range search for each value of r on all queries.
     for r in args
@@ -271,14 +299,15 @@ fn measure_throughput(
         .iter()
         .map(|&r| r as u32 * Nucleotide::gap_penalty())
     {
-        info!("Starting range search with r = {r} ...");
+        mt_log!(Level::Info, "Starting range search with r = {r} ...");
 
         // Run the tuned algorithm.
         let start = Instant::now();
         let results = cakes.batch_rnn_search(queries, radius, rnn::Algorithm::Clustered);
         let search_time = start.elapsed().as_secs_f32();
         let throughput = queries.len().as_f32() / search_time;
-        info!(
+        mt_log!(
+            Level::Info,
             "With r = {r}, {} achieved throughput of {throughput:.2e} QPS.",
             rnn::Algorithm::Clustered.name()
         );
@@ -290,7 +319,10 @@ fn measure_throughput(
             train_headers,
             train,
         );
-        debug!("With r = {r}, achieved mean recall of {mean_recall:.3}.");
+        mt_log!(
+            Level::Debug,
+            "With r = {r}, achieved mean recall of {mean_recall:.3}."
+        );
 
         // Create the report.
         let report = Report {
@@ -556,7 +588,10 @@ pub fn compute_recall<U: Number>(
         1.0
     } else {
         let (num_hits, num_linear_hits) = (hits.len(), linear_hits.len());
-        debug!("Num Hits: {num_hits}, Num Linear Hits: {num_linear_hits}");
+        mt_log!(
+            Level::Debug,
+            "Num Hits: {num_hits}, Num Linear Hits: {num_linear_hits}"
+        );
 
         hits.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Greater));
         let mut hits = hits.into_iter().map(|(_, d)| d).peekable();
@@ -579,7 +614,10 @@ pub fn compute_recall<U: Number>(
 
         // TODO: divide by the number of linear hits?
         let recall = num_common.as_f32() / num_hits.as_f32();
-        debug!("Recall: {recall:.3}, num_common: {num_common}");
+        mt_log!(
+            Level::Debug,
+            "Recall: {recall:.3}, num_common: {num_common}"
+        );
 
         recall
     }

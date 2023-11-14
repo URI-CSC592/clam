@@ -8,7 +8,7 @@ use std::{
 
 use abd_clam::{Dataset, VecDataset};
 use distances::Number;
-use log::info;
+use mt_logger::{mt_log, Level};
 use rand::prelude::*;
 use rayon::prelude::*;
 
@@ -67,7 +67,8 @@ pub fn silva_to_dataset(
         .lines()
         .map(|line| line.map_err(|e| format!("Could not read line: {e}")))
         .collect::<Result<Vec<_>, _>>()?;
-    info!(
+    mt_log!(
+        Level::Info,
         "Read {} sequences from {unaligned_path:?}.",
         sequences.len()
     );
@@ -92,10 +93,13 @@ pub fn silva_to_dataset(
         let std_dev = variance.sqrt();
         (mean, std_dev)
     };
-    info!("Minimum sequence length: {min_len}");
-    info!("Maximum sequence length: {max_len}");
-    info!("Mean sequence length: {mean:.3}");
-    info!("Standard deviation of sequence length: {std_dev:.3}");
+    mt_log!(Level::Info, "Minimum sequence length: {min_len}");
+    mt_log!(Level::Info, "Maximum sequence length: {max_len}");
+    mt_log!(Level::Info, "Mean sequence length: {mean:.3}");
+    mt_log!(
+        Level::Info,
+        "Standard deviation of sequence length: {std_dev:.3}"
+    );
 
     // Read the headers file.
     let file = File::open(headers_path)
@@ -105,7 +109,11 @@ pub fn silva_to_dataset(
         .lines()
         .map(|line| line.map_err(|e| format!("Could not read line: {e}")))
         .collect::<Result<Vec<_>, _>>()?;
-    info!("Read {} headers from {headers_path:?}.", headers.len());
+    mt_log!(
+        Level::Info,
+        "Read {} headers from {headers_path:?}.",
+        headers.len()
+    );
 
     // Convert the lines into sequences.
     let sequences = sequences
@@ -119,7 +127,7 @@ pub fn silva_to_dataset(
     // Seed the random number generator.
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
     sequences.shuffle(&mut rng);
-    info!("Shuffled sequences and headers.");
+    mt_log!(Level::Info, "Shuffled sequences and headers.");
 
     // // TODO: Remove this for the run on Ark
     // // Keep 1100 sequences
@@ -137,7 +145,8 @@ pub fn silva_to_dataset(
         |_, _| 0,
         is_expensive,
     );
-    info!(
+    mt_log!(
+        Level::Info,
         "Using {} sequences for training.",
         train_headers.cardinality()
     );
@@ -150,7 +159,8 @@ pub fn silva_to_dataset(
         |_, _| 0,
         is_expensive,
     );
-    info!(
+    mt_log!(
+        Level::Info,
         "Using {} sequences for queries.",
         query_headers.cardinality()
     );
