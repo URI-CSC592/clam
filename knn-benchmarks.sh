@@ -6,19 +6,19 @@
 
 # Set input and output directories
 input_dir="../data/ann-benchmarks/datasets"
-output_dir="../data/ann-benchmarks/knn_reports"
+output_dir="../data/ann-benchmarks/knn-reports"
 
 echo "Starting ann-benchmarks at: $(date)"
 
 # Compile cakes-results
-cargo build --release --bin knn-results
+cargo build --release
 
 # for dataset in "deep-image" "fashion-mnist" "gist" "glove-25" "glove-100" "mnist" "sift"
-for dataset in "fashion-mnist"
+for dataset in "fashion-mnist" "mnist"
 do
-    ./target/release/knn-results \
+    ./target/release/cakes-results \
         --input-dir $input_dir \
         --output-dir $output_dir \
-        --dataset $dataset \
-        --ks 10 100
+        knn \
+        --dataset $dataset
 done

@@ -6,21 +6,20 @@
 
 # Set input and output directories
 input_dir="../data/ann-benchmarks/datasets"
-output_dir="../data/ann-benchmarks/scaling_reports"
+output_dir="../data/ann-benchmarks/scaling-reports"
 
 echo "Starting scaling-benchmarks at: $(date)"
 
 # Compile cakes-results
-cargo build --release --bin scaling-results
+cargo build --release
 
 # for dataset in "fashion-mnist" "glove-25" "glove-100" "sift" "random-128-euclidean" "gist" "deep-image"
 for dataset in "fashion-mnist" "glove-25"
 do
-    ./target/release/scaling-results \
+    ./target/release/cakes-results \
         --input-dir $input_dir \
         --output-dir $output_dir \
+        scaling \
         --dataset $dataset \
-        --error-rate 0.1 \
-        --max-memory 32 \
-        --ks 10
+        --max-memory 32
 done
