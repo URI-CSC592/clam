@@ -8,6 +8,7 @@ use super::{nucleotides::Nucleotide, sequence::Sequence};
 ///
 /// * `x` - The first sequence.
 /// * `y` - The second sequence.
+#[allow(clippy::cast_possible_truncation)]
 pub fn levenshtein(x: &Sequence, y: &Sequence) -> u32 {
     if x.is_empty() {
         // handle special case of 0 length
@@ -24,6 +25,7 @@ pub fn levenshtein(x: &Sequence, y: &Sequence) -> u32 {
 }
 
 /// Returns the Levenshtein distance between the two given sequences.
+#[allow(clippy::cast_possible_truncation)]
 fn _levenshtein(x: &Sequence, y: &Sequence) -> u32 {
     let gap_penalty = Nucleotide::gap_penalty();
     // initialize the DP table for y

@@ -12,7 +12,7 @@ use mt_logger::{mt_log, Level};
 use rand::prelude::*;
 use rayon::prelude::*;
 
-use crate::sequence::Sequence;
+use super::sequence::Sequence;
 
 /// A pair of datasets. The first contains the sequences, the second contains
 /// the headers.
@@ -129,13 +129,13 @@ pub fn silva_to_dataset(
     sequences.shuffle(&mut rng);
     mt_log!(Level::Info, "Shuffled sequences and headers.");
 
-    // // TODO: Remove this for the run on Ark
-    // // Keep 1100 sequences
-    // sequences.truncate(1100);
+    // TODO: Remove this for the run on Ark
+    // Keep 1100 sequences
+    sequences.truncate(1100);
 
     // TODO: Change num_queries to 1000 for the run on Ark
     // Split the lines into the training and query sets.
-    let num_queries = 1000;
+    let num_queries = 100;
     let (train, train_headers): (Vec<_>, Vec<_>) =
         sequences.split_off(num_queries).into_iter().unzip();
     let train = VecDataset::new(format!("{stem}-queries"), train, metric, is_expensive);

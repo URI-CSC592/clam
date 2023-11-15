@@ -3,7 +3,6 @@
 use core::fmt::Display;
 
 use abd_clam::Instance;
-use rand::distributions::uniform::UniformSampler;
 
 use super::nucleotides::Nucleotide;
 

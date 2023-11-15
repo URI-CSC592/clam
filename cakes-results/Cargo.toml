@@ -22,15 +22,3 @@ csv = "1.2.2"
 rand = "0.8.5"
 rayon = "1.8.0"
 mt_logger = "3.0.2"
-
-[[bin]]
-name = "knn-results"
-path = "src/knn_reports.rs"
-
-[[bin]]
-name = "scaling-results"
-path = "src/scaling_reports.rs"
-
-[[bin]]
-name = "genomic"
-path = "src/genomic/main.rs"

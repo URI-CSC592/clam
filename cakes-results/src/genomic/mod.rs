@@ -1,22 +1,3 @@
-#![deny(clippy::correctness)]
-#![warn(
-    missing_docs,
-    clippy::all,
-    clippy::suspicious,
-    clippy::style,
-    clippy::complexity,
-    clippy::perf,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::missing_docs_in_private_items,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::cast_lossless
-)]
-#![allow(unused_imports)]
-#![allow(clippy::cast_possible_truncation)]
-
 //! Cakes benchmarks on genomic datasets.
 
 mod metrics;
@@ -30,22 +11,42 @@ use std::{
     time::Instant,
 };
 
-use abd_clam::{knn, rnn, Cakes, Dataset, Instance, VecDataset};
+use abd_clam::{knn, rnn, Cakes, Dataset, VecDataset};
 use clap::Parser;
 use distances::Number;
-use mt_logger::{mt_flush, mt_log, mt_new, Level, OutputStream};
+use mt_logger::{mt_log, Level};
 use sequence::Sequence;
 use serde::{Deserialize, Serialize};
 
-use crate::nucleotides::Nucleotide;
+use nucleotides::Nucleotide;
 
-fn main() -> Result<(), String> {
-    mt_new!(None, Level::Info, OutputStream::Both);
-
-    let args = Args::parse();
-
+/// Runs genomic sequence search.
+///
+/// # Arguments
+///
+/// * `input_dir`: The directory containing the input data.
+/// * `dataset_name`: The name of the data set to search.
+/// * `metric_name`: The name of the metric to use for computing distances.
+/// * `seed`: Optional seed for the random number generator.
+/// * `tuning_depth`: The depth of the tree to use for auto-tuning knn-search.
+/// * `tuning_k`: The value of k to use for auto-tuning knn-search.
+/// * `ks`: The values of k to use for knn-search.
+/// * `rs`: The values of r to use for range search.
+/// * `output_dir`: The directory to save the results to.
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    input_dir: &Path,
+    dataset_name: &str,
+    metric_name: &str,
+    seed: Option<u64>,
+    tuning_depth: usize,
+    tuning_k: usize,
+    ks: &[usize],
+    rs: &[usize],
+    output_dir: &Path,
+) -> Result<(), String> {
     // Parse the metric.
-    let metric = Metric::from_str(&args.metric)?;
+    let metric = Metric::from_str(metric_name)?;
     let metric_name = metric.name();
     mt_log!(Level::Info, "Using metric: {metric_name}");
 
@@ -53,11 +54,10 @@ fn main() -> Result<(), String> {
     let metric = metric.metric();
 
     // Check that the data set exists.
-    let stem = "silva-SSU-Ref";
     let data_paths = [
-        args.input_dir.join(format!("{stem}-unaligned.txt")),
-        args.input_dir.join(format!("{stem}-alphabet.txt")),
-        args.input_dir.join(format!("{stem}-headers.txt")),
+        input_dir.join(format!("{dataset_name}-unaligned.txt")),
+        input_dir.join(format!("{dataset_name}-alphabet.txt")),
+        input_dir.join(format!("{dataset_name}-headers.txt")),
     ];
     for path in &data_paths {
         if !path.exists() {
@@ -66,12 +66,6 @@ fn main() -> Result<(), String> {
     }
     let [unaligned_path, _, headers_path] = data_paths;
     mt_log!(Level::Info, "Using data from {unaligned_path:?}.");
-
-    // Check that the output directory exists.
-    let output_dir = &args.output_dir;
-    if !output_dir.exists() {
-        return Err(format!("Output directory {output_dir:?} does not exist."));
-    }
 
     let [(train, train_headers), (queries, query_headers)] =
         read_silva::silva_to_dataset(&unaligned_path, &headers_path, metric, is_expensive)?;
@@ -102,7 +96,7 @@ fn main() -> Result<(), String> {
     let query_headers = query_headers.data().iter().collect::<Vec<_>>();
 
     // Check if the cakes data structure already exists.
-    let cakes_dir = args.input_dir.join(format!("{stem}-cakes"));
+    let cakes_dir = input_dir.join(format!("{dataset_name}-cakes"));
     let (cakes, built, build_time) = if cakes_dir.exists() {
         mt_log!(Level::Info, "Loading search tree from {cakes_dir:?} ...");
         let start = Instant::now();
@@ -119,32 +113,35 @@ fn main() -> Result<(), String> {
 
         (cakes, false, load_time)
     } else {
-        let seed = args.seed;
         let criteria = abd_clam::PartitionCriteria::new(true)
             .with_min_cardinality(10)
             .with_max_depth(128);
 
         mt_log!(Level::Info, "Creating search tree ...");
         let start = Instant::now();
-        let cakes = Cakes::new(train, seed, &criteria);
+        let mut cakes = Cakes::new(train, seed, &criteria);
         let build_time = start.elapsed().as_secs_f32();
         mt_log!(
             Level::Info,
             "Created search tree in {build_time:.2e} seconds."
         );
 
-        // let tuning_depth = args.tuning_depth;
-        // let tuning_k = args.tuning_k;
-        // mt_log!(Level::Info, "Tuning knn-search with k {tuning_k} and depth {tuning_depth} ...");
+        mt_log!(
+            Level::Info,
+            "Tuning knn-search with k {tuning_k} and depth {tuning_depth} ..."
+        );
 
-        // let start = Instant::now();
-        // cakes.auto_tune_knn(tuning_depth, tuning_k);
-        // let tuning_time = start.elapsed().as_secs_f32();
-        // mt_log!(Level::Info, "Tuned knn-search in {tuning_time:.2e} seconds.");
+        let start = Instant::now();
+        cakes.auto_tune_knn(tuning_depth, tuning_k);
+        let tuning_time = start.elapsed().as_secs_f32();
+        mt_log!(
+            Level::Info,
+            "Tuned knn-search in {tuning_time:.2e} seconds."
+        );
 
-        // let tuned_algorithm = cakes.tuned_knn_algorithm();
-        // let tuned_algorithm = tuned_algorithm.name();
-        // mt_log!(Level::Info, "Tuned algorithm is {tuned_algorithm}");
+        let tuned_algorithm = cakes.tuned_knn_algorithm();
+        let tuned_algorithm = tuned_algorithm.name();
+        mt_log!(Level::Info, "Tuned algorithm is {tuned_algorithm}");
 
         // Save the Cakes data structure.
         std::fs::create_dir(&cakes_dir).map_err(|e| e.to_string())?;
@@ -157,16 +154,15 @@ fn main() -> Result<(), String> {
         &cakes,
         built,
         build_time,
-        &args,
+        ks,
+        rs,
         &queries,
         &query_headers,
         &train_headers,
-        stem,
+        dataset_name,
         metric_name,
         output_dir,
     )?;
-
-    mt_flush!().map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -190,16 +186,21 @@ fn main() -> Result<(), String> {
 /// # Errors
 ///
 /// * If the `output_dir` does not exist or cannot be written to.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation
+)]
 fn measure_throughput(
     cakes: &Cakes<Sequence, u32, VecDataset<Sequence, u32>>,
     built: bool,
     build_time: f32,
-    args: &Args,
+    ks: &[usize],
+    rs: &[usize],
     queries: &[&Sequence],
     query_headers: &[&String],
     train_headers: &VecDataset<String, u32>,
-    stem: &str,
+    dataset_name: &str,
     metric_name: &str,
     output_dir: &Path,
 ) -> Result<(), String> {
@@ -208,8 +209,7 @@ fn measure_throughput(
     let num_linear_queries = 10;
 
     // Run the linear search algorithm.
-    let k = args
-        .ks
+    let k = ks
         .iter()
         .max()
         .copied()
@@ -225,7 +225,7 @@ fn measure_throughput(
     );
 
     // Perform knn-search for each value of k on all queries.
-    for &k in &args.ks {
+    for &k in ks {
         mt_log!(Level::Info, "Starting knn-search with k = {k} ...");
 
         // Run each algorithm.
@@ -254,7 +254,7 @@ fn measure_throughput(
 
             // Create the report.
             let report = Report {
-                dataset: stem,
+                dataset: dataset_name,
                 metric: metric_name,
                 cardinality: train.cardinality(),
                 built,
@@ -276,8 +276,7 @@ fn measure_throughput(
     }
 
     // Run the linear search algorithm.
-    let radius = args
-        .rs
+    let radius = rs
         .iter()
         .max()
         .copied()
@@ -294,11 +293,7 @@ fn measure_throughput(
     );
 
     // Perform range search for each value of r on all queries.
-    for r in args
-        .rs
-        .iter()
-        .map(|&r| r as u32 * Nucleotide::gap_penalty())
-    {
+    for r in rs.iter().map(|&r| r as u32 * Nucleotide::gap_penalty()) {
         mt_log!(Level::Info, "Starting range search with r = {r} ...");
 
         // Run the tuned algorithm.
@@ -326,7 +321,7 @@ fn measure_throughput(
 
         // Create the report.
         let report = Report {
-            dataset: stem,
+            dataset: dataset_name,
             metric: metric_name,
             cardinality: train.cardinality(),
             built,

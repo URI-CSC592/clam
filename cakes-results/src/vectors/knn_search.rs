@@ -1,115 +1,21 @@
-#![deny(clippy::correctness)]
-#![warn(
-    missing_docs,
-    clippy::all,
-    clippy::suspicious,
-    clippy::style,
-    clippy::complexity,
-    clippy::perf,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::missing_docs_in_private_items,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::cast_lossless
-)]
-#![allow(unused_imports)]
+//! Benchmark the performance of KNN search algorithms.
 
-//! Report the results of an ANN benchmark.
-
-use core::cmp::Ordering;
 use std::{path::Path, time::Instant};
 
 use abd_clam::{Cakes, Dataset, PartitionCriteria, VecDataset};
-use clap::Parser;
 use distances::Number;
-use mt_logger::{mt_flush, mt_log, mt_new, Level, OutputStream};
+use mt_logger::{mt_log, Level};
 use num_format::ToFormattedString;
 use serde::{Deserialize, Serialize};
 
-mod ann_datasets;
-mod utils;
-
-use crate::{ann_datasets::AnnDatasets, utils::format_f32};
-
-fn main() -> Result<(), String> {
-    mt_new!(None, Level::Info, OutputStream::StdOut);
-
-    let args = Args::parse();
-
-    // Check that the data set exists.
-    let data_paths = [
-        args.input_dir.join(format!("{}-train.npy", args.dataset)),
-        args.input_dir.join(format!("{}-test.npy", args.dataset)),
-    ];
-    for path in &data_paths {
-        if !path.exists() {
-            return Err(format!("File {path:?} does not exist."));
-        }
-    }
-
-    // Check that the output directory exists.
-    if !args.output_dir.exists() {
-        return Err(format!(
-            "Output directory {:?} does not exist.",
-            args.output_dir
-        ));
-    }
-
-    make_reports(
-        &args.input_dir,
-        &args.dataset,
-        args.use_shards,
-        args.tuning_depth,
-        args.tuning_k,
-        args.ks,
-        args.seed,
-        &args.output_dir,
-    )?;
-
-    mt_flush!().map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Command line arguments for the replicating the ANN-Benchmarks results for Cakes.
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path to the directory with the data sets. The directory should contain
-    /// the hdf5 files downloaded from the ann-benchmarks repository.
-    #[arg(long)]
-    input_dir: std::path::PathBuf,
-    /// Output directory for the report.
-    #[arg(long)]
-    output_dir: std::path::PathBuf,
-    /// Name of the data set to process. `data_dir` should contain two files
-    /// named `{name}-train.npy` and `{name}-test.npy`. The train file
-    /// contains the data to be indexed for search, and the test file contains
-    /// the queries to be searched for.
-    #[arg(long)]
-    dataset: String,
-    /// Whether to shard the data set for search.
-    #[arg(long)]
-    use_shards: bool,
-    /// The depth of the tree to use for auto-tuning knn-search.
-    #[arg(long, default_value = "10")]
-    tuning_depth: usize,
-    /// The value of k to use for auto-tuning knn-search.
-    #[arg(long, default_value = "10")]
-    tuning_k: usize,
-    /// Number of nearest neighbors to search for.
-    #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "10 100")]
-    ks: Vec<usize>,
-    /// Seed for the random number generator.
-    #[arg(long)]
-    seed: Option<u64>,
-}
+use crate::{
+    utils::{compute_recall, format_f32},
+    vectors::ann_datasets::AnnDatasets,
+};
 
 /// Report the results of an ANN benchmark.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-fn make_reports(
+pub fn knn_search(
     input_dir: &Path,
     dataset: &str,
     use_shards: bool,
@@ -119,7 +25,7 @@ fn make_reports(
     seed: Option<u64>,
     output_dir: &Path,
 ) -> Result<(), String> {
-    mt_log!(Level::Info, "");
+    mt_log!(Level::Info, "Start knn_search on {dataset}");
 
     let dataset = AnnDatasets::from_str(dataset)?;
     let metric = dataset.metric()?;
@@ -155,13 +61,13 @@ fn make_reports(
             1_000_000
         };
 
-        let shards = VecDataset::new(dataset.name().to_string(), train_data, metric, false)
-            .make_shards(max_cardinality);
+        let shards =
+            VecDataset::new(dataset.name(), train_data, metric, false).make_shards(max_cardinality);
         let mut cakes = Cakes::new_randomly_sharded(shards, seed, &PartitionCriteria::default());
         cakes.auto_tune_knn(tuning_k, tuning_depth);
         cakes
     } else {
-        let data = VecDataset::new(dataset.name().to_string(), train_data, metric, false);
+        let data = VecDataset::new(dataset.name(), train_data, metric, false);
         let mut cakes = Cakes::new(data, seed, &PartitionCriteria::default());
         cakes.auto_tune_knn(tuning_k, tuning_depth);
         cakes
@@ -210,13 +116,13 @@ fn make_reports(
         let recall = hits
             .into_iter()
             .zip(linear_hits)
-            .map(|(hits, linear_hits)| utils::compute_recall(hits, linear_hits))
+            .map(|(hits, linear_hits)| compute_recall(hits, linear_hits))
             .sum::<f32>()
             / queries.len().as_f32();
         mt_log!(Level::Info, "Recall: {}", format_f32(recall));
 
         Report {
-            dataset: dataset.name(),
+            dataset: &dataset.name(),
             metric: dataset.metric_name(),
             cardinality,
             dimensionality,
@@ -264,7 +170,7 @@ struct Report<'a> {
 impl Report<'_> {
     /// Save the report to a file in the given directory.
     fn save(&self, dir: &Path) -> Result<(), String> {
-        let path = dir.join(format!("{}_{}.json", self.dataset, self.k));
+        let path = dir.join(format!("knn-{}-{}.json", self.dataset, self.k));
         let report = serde_json::to_string_pretty(&self).map_err(|e| e.to_string())?;
         std::fs::write(path, report).map_err(|e| e.to_string())?;
         Ok(())
