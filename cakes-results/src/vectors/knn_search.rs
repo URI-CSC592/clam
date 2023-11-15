@@ -24,6 +24,7 @@ pub fn knn_search(
     ks: &[usize],
     seed: Option<u64>,
     output_dir: &Path,
+    run_linear: bool,
 ) -> Result<(), String> {
     mt_log!(Level::Info, "Start knn_search on {dataset}");
 
@@ -96,30 +97,36 @@ pub fn knn_search(
         let throughput = queries.len().as_f32() / elapsed;
         mt_log!(Level::Info, "Throughput: {} QPS", format_f32(throughput));
 
-        let start = Instant::now();
-        let linear_hits = cakes.batch_linear_knn_search(&queries, k);
-        let linear_elapsed = start.elapsed().as_secs_f32();
-        let linear_throughput = queries.len().as_f32() / linear_elapsed;
-        mt_log!(
-            Level::Info,
-            "Linear throughput: {} QPS",
-            format_f32(linear_throughput)
-        );
+        let (linear_throughput, recall) = if run_linear {
+            let start = Instant::now();
+            let linear_hits = cakes.batch_linear_knn_search(&queries, k);
+            let linear_elapsed = start.elapsed().as_secs_f32();
+            let linear_throughput = queries.len().as_f32() / linear_elapsed;
+            mt_log!(
+                Level::Info,
+                "Linear throughput: {} QPS",
+                format_f32(linear_throughput)
+            );
 
-        let speedup_factor = throughput / linear_throughput;
-        mt_log!(
-            Level::Info,
-            "Speedup factor: {}",
-            format_f32(speedup_factor)
-        );
+            let speedup_factor = throughput / linear_throughput;
+            mt_log!(
+                Level::Info,
+                "Speedup factor: {}",
+                format_f32(speedup_factor)
+            );
 
-        let recall = hits
-            .into_iter()
-            .zip(linear_hits)
-            .map(|(hits, linear_hits)| compute_recall(hits, linear_hits))
-            .sum::<f32>()
-            / queries.len().as_f32();
-        mt_log!(Level::Info, "Recall: {}", format_f32(recall));
+            let recall = hits
+                .into_iter()
+                .zip(linear_hits)
+                .map(|(hits, linear_hits)| compute_recall(hits, linear_hits))
+                .sum::<f32>()
+                / queries.len().as_f32();
+            mt_log!(Level::Info, "Recall: {}", format_f32(recall));
+
+            (Some(linear_throughput), Some(recall))
+        } else {
+            (None, None)
+        };
 
         Report {
             dataset: &dataset.name(),
@@ -131,8 +138,8 @@ pub fn knn_search(
             k,
             tuned_algorithm: algorithm.name(),
             throughput,
-            recall,
             linear_throughput,
+            recall,
         }
         .save(output_dir)?;
     }
@@ -162,9 +169,9 @@ struct Report<'a> {
     /// Throughput of the tuned algorithm.
     throughput: f32,
     /// Throughput of linear search.
-    linear_throughput: f32,
+    linear_throughput: Option<f32>,
     /// Recall of the tuned algorithm.
-    recall: f32,
+    recall: Option<f32>,
 }
 
 impl Report<'_> {

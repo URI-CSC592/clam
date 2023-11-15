@@ -61,9 +61,10 @@ enum Commands {
         #[arg(long)]
         use_shards: bool,
 
-        /// The fractions of the root radius to use for rnn-search.
-        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "0.01 0.05")]
-        radius_fractions: Vec<f32>,
+        /// The root radius will be divided by these values to get the radii
+        /// for search.
+        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "100 20")]
+        radius_divisors: Vec<u32>,
     },
 
     /// Runs KNN search.
@@ -100,6 +101,10 @@ enum Commands {
         #[arg(long, default_value = "256")]
         max_memory: f32,
 
+        /// Whether to overwrite existing augmented data sets.
+        #[arg(long)]
+        overwrite: bool,
+
         /// Whether to shard the data set for search.
         #[arg(long)]
         use_shards: bool,
@@ -116,9 +121,10 @@ enum Commands {
         #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "10 100")]
         ks: Vec<usize>,
 
-        /// The fractions of the root radius to use for rnn-search.
-        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "0.01 0.05")]
-        radius_fractions: Vec<f32>,
+        /// The root radius will be divided by these values to get the radii
+        /// for search.
+        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "100 20")]
+        radius_divisors: Vec<u32>,
     },
 
     /// Runs KNN and RNN search on Silva-18S dataset.
@@ -169,15 +175,16 @@ fn main() -> Result<(), String> {
     match &cli.command {
         Commands::Rnn {
             use_shards,
-            radius_fractions,
+            radius_divisors,
         } => {
             vectors::rnn_search(
                 &cli.input_dir,
                 dataset,
                 *use_shards,
-                radius_fractions,
+                radius_divisors,
                 cli.seed,
                 &cli.output_dir,
+                true,
             )?;
         }
         Commands::Knn {
@@ -195,17 +202,19 @@ fn main() -> Result<(), String> {
                 ks,
                 cli.seed,
                 &cli.output_dir,
+                true,
             )?;
         }
         Commands::Scaling {
             max_scale,
             error_rate,
             max_memory,
+            overwrite,
             use_shards,
             tuning_depth,
             tuning_k,
             ks,
-            radius_fractions,
+            radius_divisors,
         } => {
             let scaled_names = vectors::augment_dataset(
                 &cli.input_dir,
@@ -213,6 +222,7 @@ fn main() -> Result<(), String> {
                 *max_scale,
                 *error_rate,
                 *max_memory,
+                *overwrite,
                 &cli.input_dir,
             )?;
             for scaled_name in scaled_names {
@@ -220,9 +230,10 @@ fn main() -> Result<(), String> {
                     &cli.input_dir,
                     &scaled_name,
                     *use_shards,
-                    radius_fractions,
+                    radius_divisors,
                     cli.seed,
                     &cli.output_dir,
+                    false,
                 )?;
                 vectors::knn_search(
                     &cli.input_dir,
@@ -233,6 +244,7 @@ fn main() -> Result<(), String> {
                     ks,
                     cli.seed,
                     &cli.output_dir,
+                    false,
                 )?;
             }
         }

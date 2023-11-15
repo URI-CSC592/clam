@@ -19,9 +19,10 @@ pub fn rnn_search(
     input_dir: &Path,
     dataset: &str,
     use_shards: bool,
-    radius_fractions: &[f32],
+    radius_divisors: &[u32],
     seed: Option<u64>,
     output_dir: &Path,
+    run_linear: bool,
 ) -> Result<(), String> {
     mt_log!(Level::Info, "Start rnn_search on {dataset}");
 
@@ -80,9 +81,9 @@ pub fn rnn_search(
 
     let root_radius = cakes.trees()[0].root().radius();
 
-    for rf in radius_fractions {
-        let radius = root_radius * rf;
-        mt_log!(Level::Info, "radius fraction: {rf}, radius: {radius}");
+    for &rd in radius_divisors {
+        let radius = root_radius / rd.as_f32();
+        mt_log!(Level::Info, "radius divisor: {rd}, radius: {radius}");
 
         let start = Instant::now();
         let hits = cakes.batch_tuned_rnn_search(&queries, radius);
@@ -90,30 +91,36 @@ pub fn rnn_search(
         let throughput = queries.len().as_f32() / elapsed;
         mt_log!(Level::Info, "Throughput: {} QPS", format_f32(throughput));
 
-        let start = Instant::now();
-        let linear_hits = cakes.batch_linear_rnn_search(&queries, radius);
-        let linear_elapsed = start.elapsed().as_secs_f32();
-        let linear_throughput = queries.len().as_f32() / linear_elapsed;
-        mt_log!(
-            Level::Info,
-            "Linear throughput: {} QPS",
-            format_f32(linear_throughput)
-        );
+        let (linear_throughput, recall) = if run_linear {
+            let start = Instant::now();
+            let linear_hits = cakes.batch_linear_rnn_search(&queries, radius);
+            let linear_elapsed = start.elapsed().as_secs_f32();
+            let linear_throughput = queries.len().as_f32() / linear_elapsed;
+            mt_log!(
+                Level::Info,
+                "Linear throughput: {} QPS",
+                format_f32(linear_throughput)
+            );
 
-        let speedup_factor = throughput / linear_throughput;
-        mt_log!(
-            Level::Info,
-            "Speedup factor: {}",
-            format_f32(speedup_factor)
-        );
+            let speedup_factor = throughput / linear_throughput;
+            mt_log!(
+                Level::Info,
+                "Speedup factor: {}",
+                format_f32(speedup_factor)
+            );
 
-        let recall = hits
-            .into_iter()
-            .zip(linear_hits)
-            .map(|(hits, linear_hits)| compute_recall(hits, linear_hits))
-            .sum::<f32>()
-            / queries.len().as_f32();
-        mt_log!(Level::Info, "Recall: {}", format_f32(recall));
+            let recall = hits
+                .into_iter()
+                .zip(linear_hits)
+                .map(|(hits, linear_hits)| compute_recall(hits, linear_hits))
+                .sum::<f32>()
+                / queries.len().as_f32();
+            mt_log!(Level::Info, "Recall: {}", format_f32(recall));
+
+            (Some(linear_throughput), Some(recall))
+        } else {
+            (None, None)
+        };
 
         Report {
             dataset: &dataset.name(),
@@ -124,10 +131,10 @@ pub fn rnn_search(
             num_queries,
             radius,
             throughput,
-            recall,
             linear_throughput,
+            recall,
         }
-        .save(output_dir)?;
+        .save(output_dir, rd)?;
     }
 
     Ok(())
@@ -153,15 +160,15 @@ struct Report<'a> {
     /// Throughput of the tuned algorithm.
     throughput: f32,
     /// Throughput of linear search.
-    linear_throughput: f32,
+    linear_throughput: Option<f32>,
     /// Recall of the tuned algorithm.
-    recall: f32,
+    recall: Option<f32>,
 }
 
 impl Report<'_> {
     /// Save the report to a file in the given directory.
-    fn save(&self, dir: &Path) -> Result<(), String> {
-        let path = dir.join(format!("rnn-{}-{}.json", self.dataset, self.radius));
+    fn save(&self, dir: &Path, rd: u32) -> Result<(), String> {
+        let path = dir.join(format!("rnn-{}-{rd}.json", self.dataset));
         let report = serde_json::to_string_pretty(&self).map_err(|e| e.to_string())?;
         std::fs::write(path, report).map_err(|e| e.to_string())?;
         Ok(())

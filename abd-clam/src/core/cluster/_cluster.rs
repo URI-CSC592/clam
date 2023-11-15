@@ -573,7 +573,7 @@ impl<U: Number> Cluster<U> {
 
         let lfd = utils::compute_lfd(radius, &center_distances);
         mt_log!(
-            Level::Info,
+            Level::Debug,
             "Created cluster with depth {depth} offset {offset} and cardinality {cardinality}."
         );
 
@@ -612,10 +612,10 @@ impl<U: Number> Cluster<U> {
         let mut indices = (0..self.cardinality).collect::<Vec<_>>();
         (self, indices) = self._partition(data, criteria, indices);
 
-        mt_log!(Level::Info, "Finished building tree. Starting data permutation.");
+        mt_log!(Level::Debug, "Finished building tree. Starting data permutation.");
         data.permute_instances(&indices)
             .unwrap_or_else(|_| unreachable!("All indices are valid."));
-        mt_log!(Level::Info, "Finished data permutation.");
+        mt_log!(Level::Debug, "Finished data permutation.");
 
         self
     }
@@ -633,7 +633,7 @@ impl<U: Number> Cluster<U> {
             let r_offset = self.offset + l_indices.len();
 
             mt_log!(
-                Level::Info,
+                Level::Debug,
                 "Partitioning cluster at depth {} with offset {} and cardinality {}.",
                 self.depth,
                 self.offset,

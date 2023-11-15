@@ -43,6 +43,7 @@ pub fn augment_dataset(
     max_multiplier: u32,
     error_rate: f32,
     max_memory: f32,
+    overwrite: bool,
     output_dir: &Path,
 ) -> Result<Vec<String>, String> {
     // Read the dataset.
@@ -76,6 +77,21 @@ pub fn augment_dataset(
             dataset.name()
         );
 
+        let scaled_name = format!("{}-scale-{multiplier}", dataset.name());
+        let output_path = output_dir.join(format!("{scaled_name}-train.npy"));
+
+        if overwrite && output_path.exists() {
+            std::fs::remove_file(&output_path).map_err(|e| e.to_string())?;
+        } else if output_path.exists() {
+            mt_log!(
+                Level::Info,
+                "Skipping augmented dataset {} with multiplier {multiplier} because it already exists.",
+                dataset.name()
+            );
+            scaled_names.push(scaled_name);
+            continue;
+        }
+
         let data = if dataset.name().starts_with("random") {
             let cardinality = base_cardinality * multiplier;
             let (min_val, max_val) = (-1.0, 1.0);
@@ -91,8 +107,6 @@ pub fn augment_dataset(
             symagen::augmentation::augment_data(&train_data, multiplier - 1, error_rate)
         };
 
-        let scaled_name = format!("{}-scale-{multiplier}", dataset.name());
-        let output_path = output_dir.join(format!("{scaled_name}-train.npy"));
         save_npy(data, &output_path)?;
         scaled_names.push(scaled_name);
 
