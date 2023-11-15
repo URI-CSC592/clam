@@ -43,9 +43,13 @@ struct Cli {
     #[arg(long)]
     seed: Option<u64>,
 
+    /// Name of the data set to use.
+    #[arg(long)]
+    dataset: String,
+
     /// Subcommands for the CLI.
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 /// Subcommands for the CLI.
@@ -53,31 +57,17 @@ struct Cli {
 enum Commands {
     /// Runs RNN search.
     Rnn {
-        /// Name of the data set to process. `data_dir` should contain two files
-        /// named `{name}-train.npy` and `{name}-test.npy`. The train file
-        /// contains the data to be indexed for search, and the test file contains
-        /// the queries to be searched for.
-        #[arg(long)]
-        dataset: String,
-
         /// Whether to shard the data set for search.
         #[arg(long)]
         use_shards: bool,
 
         /// The fractions of the root radius to use for rnn-search.
-        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "0.01 0.05 0.1")]
+        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "0.01 0.05")]
         radius_fractions: Vec<f32>,
     },
 
     /// Runs KNN search.
     Knn {
-        /// Name of the data set to process. `data_dir` should contain two files
-        /// named `{name}-train.npy` and `{name}-test.npy`. The train file
-        /// contains the data to be indexed for search, and the test file contains
-        /// the queries to be searched for.
-        #[arg(long)]
-        dataset: String,
-
         /// Whether to shard the data set for search.
         #[arg(long)]
         use_shards: bool,
@@ -97,13 +87,6 @@ enum Commands {
 
     /// Generates augmented data sets for scaling experiments.
     Scaling {
-        /// Name of the data set to process. `data_dir` should contain two files
-        /// named `{name}-train.npy` and `{name}-test.npy`. The train file
-        /// contains the data to be indexed for search, and the test file contains
-        /// the queries to be searched for.
-        #[arg(long)]
-        dataset: String,
-
         /// Maximum scaling factor. The data set will be scaled by factors of
         /// `2 ^ i` for `i` in `0..=max_scale`.
         #[arg(long, default_value = "16")]
@@ -116,13 +99,30 @@ enum Commands {
         /// Maximum memory usage (in gigabytes) for the scaled data sets.
         #[arg(long, default_value = "256")]
         max_memory: f32,
+
+        /// Whether to shard the data set for search.
+        #[arg(long)]
+        use_shards: bool,
+
+        /// The depth of the tree to use for auto-tuning knn-search.
+        #[arg(long, default_value = "10")]
+        tuning_depth: usize,
+
+        /// The value of k to use for auto-tuning knn-search.
+        #[arg(long, default_value = "10")]
+        tuning_k: usize,
+
+        /// Number of nearest neighbors to search for.
+        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "10 100")]
+        ks: Vec<usize>,
+
+        /// The fractions of the root radius to use for rnn-search.
+        #[arg(long, value_parser, num_args = 1.., value_delimiter = ' ', default_value = "0.01 0.05")]
+        radius_fractions: Vec<f32>,
     },
 
     /// Runs KNN and RNN search on Silva-18S dataset.
     Genomic {
-        /// The name of the dataset to use.
-        #[arg(long, default_value = "silva-SSU-Ref")]
-        dataset: String,
         /// The metric to use for computing distances. One of "hamming",
         /// "levenshtein", or "needleman-wunsch".
         #[arg(long, default_value = "levenshtein")]
@@ -146,6 +146,7 @@ enum Commands {
     },
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), String> {
     mt_new!(None, Level::Info, OutputStream::StdOut);
 
@@ -161,14 +162,15 @@ fn main() -> Result<(), String> {
         cli.output_dir.display()
     );
 
+    let dataset = &cli.dataset;
+
     // You can check for the existence of subcommands, and if found use their
     // matches just as you would the top level cmd
     match &cli.command {
-        Some(Commands::Rnn {
-            dataset,
+        Commands::Rnn {
             use_shards,
             radius_fractions,
-        }) => {
+        } => {
             vectors::rnn_search(
                 &cli.input_dir,
                 dataset,
@@ -178,31 +180,34 @@ fn main() -> Result<(), String> {
                 &cli.output_dir,
             )?;
         }
-        Some(Commands::Knn {
-            dataset,
+        Commands::Knn {
             use_shards,
             tuning_depth,
             tuning_k,
             ks,
-        }) => {
+        } => {
             vectors::knn_search(
                 &cli.input_dir,
                 dataset,
                 *use_shards,
                 *tuning_depth,
                 *tuning_k,
-                ks.clone(),
+                ks,
                 cli.seed,
                 &cli.output_dir,
             )?;
         }
-        Some(Commands::Scaling {
-            dataset,
+        Commands::Scaling {
             max_scale,
             error_rate,
             max_memory,
-        }) => {
-            vectors::augment_dataset(
+            use_shards,
+            tuning_depth,
+            tuning_k,
+            ks,
+            radius_fractions,
+        } => {
+            let scaled_names = vectors::augment_dataset(
                 &cli.input_dir,
                 dataset,
                 *max_scale,
@@ -210,15 +215,34 @@ fn main() -> Result<(), String> {
                 *max_memory,
                 &cli.input_dir,
             )?;
+            for scaled_name in scaled_names {
+                vectors::rnn_search(
+                    &cli.input_dir,
+                    &scaled_name,
+                    *use_shards,
+                    radius_fractions,
+                    cli.seed,
+                    &cli.output_dir,
+                )?;
+                vectors::knn_search(
+                    &cli.input_dir,
+                    &scaled_name,
+                    *use_shards,
+                    *tuning_depth,
+                    *tuning_k,
+                    ks,
+                    cli.seed,
+                    &cli.output_dir,
+                )?;
+            }
         }
-        Some(Commands::Genomic {
-            dataset,
+        Commands::Genomic {
             metric,
             tuning_depth,
             tuning_k,
             ks,
             rs,
-        }) => {
+        } => {
             genomic::run(
                 &cli.input_dir,
                 dataset,
@@ -231,10 +255,7 @@ fn main() -> Result<(), String> {
                 &cli.output_dir,
             )?;
         }
-        None => {}
     }
-
-    // Continued program logic goes here...
 
     mt_flush!().map_err(|e| e.to_string())?;
 

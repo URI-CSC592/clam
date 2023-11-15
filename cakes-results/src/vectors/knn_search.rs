@@ -21,7 +21,7 @@ pub fn knn_search(
     use_shards: bool,
     tuning_depth: usize,
     tuning_k: usize,
-    ks: Vec<usize>,
+    ks: &[usize],
     seed: Option<u64>,
     output_dir: &Path,
 ) -> Result<(), String> {
@@ -87,7 +87,7 @@ pub fn knn_search(
     let algorithm = cakes.tuned_knn_algorithm();
     mt_log!(Level::Info, "Tuned algorithm: {}", algorithm.name());
 
-    for k in ks {
+    for &k in ks {
         mt_log!(Level::Info, "k: {k}");
 
         let start = Instant::now();

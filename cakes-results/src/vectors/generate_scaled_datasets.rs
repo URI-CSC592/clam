@@ -28,9 +28,15 @@ use crate::vectors::ann_datasets::AnnDatasets;
 /// * `max_memory` - The maximum memory cost of the augmented dataset in GB.
 /// * `output_dir` - The directory to store the augmented datasets.
 ///
+/// # Returns
+///
+/// The names of the augmented datasets.
+///
 /// # Errors
 ///
 /// * If the dataset does not exist.
+/// * If the dataset cannot be read.
+/// * If the dataset cannot be saved.
 pub fn augment_dataset(
     input_dir: &Path,
     dataset: &str,
@@ -38,7 +44,7 @@ pub fn augment_dataset(
     error_rate: f32,
     max_memory: f32,
     output_dir: &Path,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     // Read the dataset.
     let dataset = AnnDatasets::from_str(dataset)?;
     let [train_data, _] = dataset.read(input_dir)?;
@@ -50,6 +56,8 @@ pub fn augment_dataset(
         "Read dataset {} with {base_cardinality} points and {dimensionality} dimensions.",
         dataset.name()
     );
+
+    let mut scaled_names = Vec::new();
 
     for multiplier in (1..=max_multiplier).map(|s| 2_usize.pow(s)) {
         let memory_cost = memory_cost(base_cardinality, dimensionality);
@@ -83,9 +91,10 @@ pub fn augment_dataset(
             symagen::augmentation::augment_data(&train_data, multiplier - 1, error_rate)
         };
 
-        let output_path =
-            output_dir.join(format!("{}-scale-{}-train.npy", dataset.name(), multiplier));
+        let scaled_name = format!("{}-scale-{multiplier}", dataset.name());
+        let output_path = output_dir.join(format!("{scaled_name}-train.npy"));
         save_npy(data, &output_path)?;
+        scaled_names.push(scaled_name);
 
         mt_log!(
             Level::Info,
@@ -95,7 +104,7 @@ pub fn augment_dataset(
         );
     }
 
-    Ok(())
+    Ok(scaled_names)
 }
 
 /// Compute the memory cost of a dataset in GB.

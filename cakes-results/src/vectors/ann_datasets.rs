@@ -194,7 +194,7 @@ impl AnnDatasets {
             let train_path = dir.join(format!("{}-train.npy", self.name()));
             let train_data = Self::read_npy(&train_path)?;
 
-            let test_path = dir.join(format!("{}-test.npy", self.name()));
+            let test_path = dir.join(format!("{}-test.npy", self.base_name()));
             let test_data = Self::read_npy(&test_path)?;
 
             [train_data, test_data]
