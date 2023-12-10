@@ -4,6 +4,7 @@ members = [
     "cakes-results",
     # "py-clam",  # TODO: re-enable when we have python bindings
     "distances",
+    "shell",
     "SyMaGen"
 ]
 resolver = "2"
