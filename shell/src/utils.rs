@@ -1,5 +1,8 @@
 use std::ops::Neg;
 
+use abd_clam::{Cluster, VecDataset};
+use distances::Number;
+
 /// Calculate the Shannon entropy for a given array of probabilities
 ///
 /// The Shannon entropy is calculated as the negative sum of the probabilities
@@ -93,15 +96,23 @@ fn count_occurrences<T: Eq + Copy>(values: &[T]) -> Vec<(T, usize)> {
 ///
 #[allow(dead_code)]
 #[allow(clippy::cast_precision_loss)]
-pub fn shannon_entropy_from_metadata<T: Eq + Copy>(metadata: &[T]) -> f64 {
+pub fn shannon_entropy_from_metadata<U: Number>(
+    cluster: &Cluster<U>,
+    metadata: &VecDataset<Vec<f32>, f32, bool>,
+) -> f64 {
+    let cluster_metadata: Vec<_> = cluster
+        .indices()
+        .map(|i| metadata.metadata_of(i).unwrap())
+        .collect();
+
     // Put the metadata values and counts into an array of tuples
-    let counts = count_occurrences(metadata);
+    let counts = count_occurrences(&cluster_metadata);
 
     // Get the probabilities from the counts and calculate the Shannon entropy
     counts
         .iter()
         .fold(0.0, |acc, (_, count)| {
-            let probability = *count as f64 / metadata.len() as f64;
+            let probability = *count as f64 / cluster_metadata.len() as f64;
             probability.mul_add(probability.log2(), acc)
         })
         .neg()
