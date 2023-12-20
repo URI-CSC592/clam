@@ -36,11 +36,22 @@ fn main() {
         Some(metadata),
     );
 
+    let entropy_criterion = utils::MinShannonEntropy {
+        threshold: 0.3,
+        // TODO: Remove this clone
+        data: data.clone(),
+    };
+
     // Create Partition Criteria
-    let criteria = PartitionCriteria::default();
+    let criteria = PartitionCriteria::default().with_custom(
+        Box::new(entropy_criterion)
+    );
 
     // The Cakes struct provides the functionality described in the CHESS paper.
     // We use a single shard here because the demo data is small.
     let _model = Cakes::new(data, Some(seed), &criteria);
     // This line performs a non-trivial amount of work. #understatement
+
+    // TODO: This needs to be dropped because the data is reordered in Cakes.
+    drop(criteria);
 }

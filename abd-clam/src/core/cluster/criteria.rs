@@ -74,8 +74,8 @@ impl<U: Number> PartitionCriteria<U> {
     /// # Arguments
     ///
     /// * `c`: the custom criterion to add.
-    #[allow(dead_code)]
-    pub(crate) fn with_custom(mut self, c: Box<dyn PartitionCriterion<U>>) -> Self {
+    #[must_use]
+    pub fn with_custom(mut self, c: Box<dyn PartitionCriterion<U>>) -> Self {
         self.criteria.push(c);
         self
     }
