@@ -3,6 +3,7 @@ pub(crate) mod utils;
 use abd_clam::{Cakes, PartitionCriteria, VecDataset};
 use ann_datasets::AnnDatasets;
 use clap::Parser;
+use log::{debug, info};
 use std::path::Path;
 
 // Command line arguments for SHELL
@@ -110,12 +111,12 @@ fn benchmark_shell(
     let train_path = input_dir.join(format!("{}-train.npy", dataset));
     let test_path = input_dir.join(format!("{}-test.npy", dataset));
 
-    log::debug!("Dataset: {}", dataset);
-    log::debug!("Train path: {:?}", train_path);
-    log::debug!("Test path: {:?}", test_path);
-    log::debug!("Output directory: {:?}", output_dir);
-    log::debug!("ks: {:?}", ks);
-    log::debug!("Seed: {:?}", seed);
+    debug!("Dataset: {}", dataset);
+    debug!("Train path: {:?}", train_path);
+    debug!("Test path: {:?}", test_path);
+    debug!("Output directory: {:?}", output_dir);
+    debug!("ks: {:?}", ks);
+    debug!("Seed: {:?}", seed);
 
     // Load the train and test data
     let data = AnnDatasets::from_str(dataset)?;
@@ -130,10 +131,10 @@ fn benchmark_shell(
     );
 
     // Print the dataset properties
-    log::info!("Dataset Name: {}", data.name());
-    log::info!("Training Cardinality: {}", cardinality);
-    log::info!("Training Dimensionality: {}", dimensionality);
-    log::info!("Queries: {}", queries.len());
+    info!("Dataset Name: {}", data.name());
+    info!("Training Cardinality: {}", cardinality);
+    info!("Training Dimensionality: {}", dimensionality);
+    info!("Queries: {}", queries.len());
 
     // Create dummy metadata for the dataset
     // The dummy metadata is a Vec of strings from 0 to 9
@@ -159,7 +160,6 @@ fn benchmark_shell(
         false,
         Some(train_metadata),
     );
-    let data2 = data.clone();
 
     let entropy_criterion = utils::MinShannonEntropy {
         threshold: 0.3,
@@ -169,33 +169,95 @@ fn benchmark_shell(
 
     // Create Partition Criteria
     let entropy_criteria = PartitionCriteria::default().with_custom(Box::new(entropy_criterion));
-
     let default_criteria = PartitionCriteria::default();
 
-    // Benchmark with the custom partition criteria
-    // Start a timer
-    let start = std::time::Instant::now();
+    // Benchmark building the models
+    //benchmark_build_model(&data, seed, &entropy_criteria, &default_criteria)?;
 
-    // Create the model
-    let _model = Cakes::new(data, seed, &entropy_criteria);
+    // Benchmark querying the models
+    //benchmark_query_model(&data, &queries, &ks, seed, &entropy_criteria, &default_criteria)?;
 
-    // Stop the timer
-    let elapsed = start.elapsed();
+    // Benchmark building the models 100 times
+    let num_trials = 2;
+    let mut build_times_entropy = Vec::with_capacity(num_trials);
+    let mut build_times_default = Vec::with_capacity(num_trials);
 
-    // Print the time
-    log::info!("Time to build custom model: {:?}", elapsed);
+    for _ in 0..num_trials {
+        let data_clone = data.clone();
+        let start = std::time::Instant::now();
+        let mut _cakes = Cakes::new(data_clone, seed, &entropy_criteria);
+        let build_time = start.elapsed().as_secs_f64();
+        build_times_entropy.push(build_time);
 
-    // Benchmark with the default partition criteria
-    let start = std::time::Instant::now();
+        let data_clone = data.clone();
+        let start = std::time::Instant::now();
+        let mut _cakes = Cakes::new(data_clone, seed, &default_criteria);
+        let build_time = start.elapsed().as_secs_f64();
+        build_times_default.push(build_time);
+    }
 
-    // Create the model
-    let _model = Cakes::new(data2, seed, &default_criteria);
+    // Average the build times
+    let (build_time_entropy, build_time_default) = (
+        build_times_entropy.iter().sum::<f64>() / num_trials as f64,
+        build_times_default.iter().sum::<f64>() / num_trials as f64,
+    );
 
-    // Stop the timer
-    let elapsed = start.elapsed();
+    // Print the build times in ms
+    info!(
+        "Build time (entropy): {:.3} ms",
+        build_time_entropy * 1000.0
+    );
 
-    // Print the time
-    log::info!("Time to build default model: {:?}", elapsed);
+    info!(
+        "Build time (default): {:.3} ms",
+        build_time_default * 1000.0
+    );
+
+    for k in &ks {
+        info!("Running query benchmarks (k = {})", k);
+        // Store the throughputs
+        let mut throughput_default = Vec::with_capacity(num_trials);
+        let mut throughput_entropy = Vec::with_capacity(num_trials);
+
+        let data_clone = data.clone();
+        let mut cakes_default = Cakes::new(data_clone, seed, &default_criteria);
+
+        let data_clone = data.clone();
+        let mut cakes_entropy = Cakes::new(data_clone, seed, &entropy_criteria);
+
+        cakes_default.auto_tune_knn(*k, 10);
+        cakes_entropy.auto_tune_knn(*k, 10);
+
+        for i in 0..num_trials {
+            info!("Trial {}", i);
+            let start = std::time::Instant::now();
+            cakes_default.batch_tuned_knn_search(&queries, *k);
+            let elapsed = start.elapsed().as_secs_f64();
+            throughput_default.push(queries.len() as f64 / elapsed);
+
+            let start = std::time::Instant::now();
+            cakes_entropy.batch_tuned_knn_search(&queries, *k);
+            let elapsed = start.elapsed().as_secs_f64();
+            throughput_entropy.push(queries.len() as f64 / elapsed);
+        }
+
+        // Average the throughputs
+        let (throughput_default, throughput_entropy) = (
+            throughput_default.iter().sum::<f64>() / num_trials as f64,
+            throughput_entropy.iter().sum::<f64>() / num_trials as f64,
+        );
+
+        // Print the throughputs in queries per second
+        info!(
+            "Throughput: {:.3} QPS (k = {}, default)",
+            throughput_default, k
+        );
+
+        info!(
+            "Throughput: {:.3} QPS (k = {}, entropy)",
+            throughput_entropy, k
+        );
+    }
 
     Ok(())
 }
