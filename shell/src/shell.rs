@@ -20,6 +20,8 @@ struct Args {
     ks: Vec<usize>,
     #[arg(long, value_parser, num_args = 1, default_value = "42")]
     seed: Option<u64>,
+    #[arg(long, value_parser, num_args = 1, default_value = "100")]
+    num_trials: usize,
 }
 
 fn main() -> Result<(), String> {
@@ -42,6 +44,7 @@ fn main() -> Result<(), String> {
         &args.dataset,
         args.ks,
         args.seed,
+        args.num_trials,
     )?;
 
     Ok(())
@@ -99,6 +102,7 @@ fn check_output_dir(output_dir: &Path) -> Result<(), String> {
 /// * `dataset` - The name of the dataset
 /// * `ks` - The values of k to use
 /// * `seed` - The random seed to use
+/// * `num_trials` - The number of trials to run
 ///
 fn benchmark_shell(
     input_dir: &Path,
@@ -106,6 +110,7 @@ fn benchmark_shell(
     dataset: &str,
     ks: Vec<usize>,
     seed: Option<u64>,
+    num_trials: usize,
 ) -> Result<(), String> {
     // Load the dataset
     let train_path = input_dir.join(format!("{}-train.npy", dataset));
@@ -177,8 +182,7 @@ fn benchmark_shell(
     // Benchmark querying the models
     //benchmark_query_model(&data, &queries, &ks, seed, &entropy_criteria, &default_criteria)?;
 
-    // Benchmark building the models 100 times
-    let num_trials = 2;
+    // Benchmark building the models
     let mut build_times_entropy = Vec::with_capacity(num_trials);
     let mut build_times_default = Vec::with_capacity(num_trials);
 
@@ -213,6 +217,23 @@ fn benchmark_shell(
         build_time_default * 1000.0
     );
 
+    // Write the build time averages to a csv
+    let mut build_writer =
+        csv::Writer::from_path(output_dir.join(format!("build-{}-{}.csv", dataset, seed.unwrap())))
+            .unwrap();
+    build_writer
+        .write_record(["default (s)", "entropy (s)", "dataset", "trials"])
+        .unwrap();
+    build_writer
+        .write_record(&[
+            build_time_default.to_string(),
+            build_time_entropy.to_string(),
+            dataset.to_string(),
+            num_trials.to_string(),
+        ])
+        .unwrap();
+    build_writer.flush().unwrap();
+
     for k in &ks {
         info!("Running query benchmarks (k = {})", k);
         // Store the throughputs
@@ -228,8 +249,7 @@ fn benchmark_shell(
         cakes_default.auto_tune_knn(*k, 10);
         cakes_entropy.auto_tune_knn(*k, 10);
 
-        for i in 0..num_trials {
-            info!("Trial {}", i);
+        for _ in 0..num_trials {
             let start = std::time::Instant::now();
             cakes_default.batch_tuned_knn_search(&queries, *k);
             let elapsed = start.elapsed().as_secs_f64();
@@ -257,6 +277,28 @@ fn benchmark_shell(
             "Throughput: {:.3} QPS (k = {}, entropy)",
             throughput_entropy, k
         );
+
+        // Write the throughputs to a csv in the format throughputs-<dataset>-<k>.csv
+        let mut throughput_writer = csv::Writer::from_path(output_dir.join(format!(
+            "throughputs-{}-{}-{}.csv",
+            dataset,
+            k,
+            seed.unwrap()
+        )))
+        .unwrap();
+        throughput_writer
+            .write_record(["QPS (default)", "QPS (entropy)", "dataset", "k", "trials"])
+            .unwrap();
+        throughput_writer
+            .write_record(&[
+                throughput_default.to_string(),
+                throughput_entropy.to_string(),
+                dataset.to_string(),
+                k.to_string(),
+                num_trials.to_string(),
+            ])
+            .unwrap();
+        throughput_writer.flush().unwrap();
     }
 
     Ok(())

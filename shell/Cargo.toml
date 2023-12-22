@@ -2,7 +2,8 @@
 name = "shell"
 version = "0.1.0"
 authors = [
-    "Carl Stoker <carl_stoker@uri.edu>"
+    "Carl Stoker <carl_stoker@uri.edu>",
+    "Najib Ishaq <najib_ishaq@zoho.com>",
 ]
 edition = "2021"
 description = "Similarity-based Heuristic for Efficient Limiting of Levels for Partitioning and Clustering in CLAM"
