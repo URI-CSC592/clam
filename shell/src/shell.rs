@@ -26,9 +26,7 @@ struct Args {
 
 fn main() -> Result<(), String> {
     // Initialize the logger.
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .init();
+    env_logger::init();
 
     // Get the command line arguments.
     let args = Args::parse();
@@ -38,7 +36,7 @@ fn main() -> Result<(), String> {
     check_output_dir(&args.output_dir)?;
 
     // Benchmark SHELL.
-    run_benchmarks(
+    run_all_benchmarks(
         &args.input_dir,
         &args.output_dir,
         &args.dataset,
@@ -104,7 +102,7 @@ fn check_output_dir(output_dir: &Path) -> Result<(), String> {
 /// * `seed` - The random seed to use
 /// * `num_trials` - The number of trials to run
 ///
-fn run_benchmarks(
+fn run_all_benchmarks(
     input_dir: &Path,
     output_dir: &Path,
     dataset: &str,
@@ -116,7 +114,7 @@ fn run_benchmarks(
     let train_path = input_dir.join(format!("{}-train.npy", dataset));
     let test_path = input_dir.join(format!("{}-test.npy", dataset));
 
-    debug!("Dataset: {}", dataset);
+    debug!("Dataset CLI argument: {}", dataset);
     debug!("Train path: {:?}", train_path);
     debug!("Test path: {:?}", test_path);
     debug!("Output directory: {:?}", output_dir);
@@ -140,6 +138,7 @@ fn run_benchmarks(
     info!("Training Cardinality: {}", cardinality);
     info!("Training Dimensionality: {}", dimensionality);
     info!("Queries: {}", queries.len());
+    info!("Number of trials: {}", num_trials);
 
     // Get metadata from CSV files
     // TODO: Fix metadata files. The CSVs for fashion-mnist are incorrect and missing for other datasets
@@ -173,8 +172,9 @@ fn run_benchmarks(
 
     // Benchmark build times
     info!("Running build time benchmarks");
-
-    let (build_time_naive, build_time_entropy) = benchmark_build_times(
+    run_build_time_benchmarks(
+        output_dir,
+        dataset,
         data.clone(),
         seed,
         num_trials,
@@ -182,69 +182,18 @@ fn run_benchmarks(
         &entropy_criteria,
     )?;
 
-    print_results(
-        "Build time",
-        (build_time_naive * 1000.0, build_time_entropy * 1000.0),
-        "ms",
-    );
-
-    let results = vec![vec![
-        build_time_naive.to_string(),
-        build_time_entropy.to_string(),
-    ]];
-
-    write_results(
+    // Benchmark query throughput
+    run_query_throughput_benchmarks(
         output_dir,
-        format!(
-            "build-{}-{}seed-{}trials",
-            dataset,
-            seed.unwrap(),
-            num_trials,
-        )
-        .as_str(),
-        vec!["Build time (naive)", "Build time (entropy)"],
-        results,
-    );
-
-    // Benchmark throughput 2D array that is ks.len() x 3
-    // Each element is a vector of strings and should be preassigned
-    let mut throughput_results = Vec::with_capacity(ks.len());
-    for k in &ks {
-        throughput_results.push(vec![k.to_string(), String::new(), String::new()]);
-    }
-
-    for i in 0..ks.len() {
-        let k = ks[i];
-
-        let (throughput_naive, throughput_entropy) = benchmark_throughput(
-            data.clone(),
-            queries.clone(),
-            k,
-            seed,
-            num_trials,
-            &default_criteria,
-            &entropy_criteria,
-        )?;
-
-        throughput_results[i][1] = throughput_naive.to_string();
-        throughput_results[i][2] = throughput_entropy.to_string();
-
-        print_results("Throughput", (throughput_naive, throughput_entropy), "QPS");
-    }
-
-    // Write the throughput results
-    write_results(
-        output_dir,
-        format!(
-            "query-{}-{}seed-{}trials",
-            dataset,
-            seed.unwrap(),
-            num_trials,
-        )
-        .as_str(),
-        vec!["k", "Throughput (QPS, naive)", "Throughput (QPS, entropy)"],
-        throughput_results,
-    );
+        dataset,
+        data.clone(),
+        queries,
+        ks,
+        seed,
+        num_trials,
+        &default_criteria,
+        &entropy_criteria,
+    )?;
 
     Ok(())
 }
@@ -405,7 +354,6 @@ fn benchmark_throughput(
     naive_criteria: &PartitionCriteria<f32>,
     entropy_criteria: &PartitionCriteria<f32>,
 ) -> Result<(f64, f64), String> {
-    info!("Running throughput benchmarks (k = {})", k);
     // Store the throughputs
     let mut throughput_naive = Vec::with_capacity(num_trials);
     let mut throughput_entropy = Vec::with_capacity(num_trials);
@@ -415,7 +363,8 @@ fn benchmark_throughput(
     let mut cakes = Cakes::new(data_clone, seed, naive_criteria);
     cakes.auto_tune_knn(k, 10);
 
-    for _ in 0..num_trials {
+    for i in 0..num_trials {
+        debug!("Running naive trial {}/{}...", i + 1, num_trials);
         let start = std::time::Instant::now();
         cakes.batch_tuned_knn_search(&queries, k);
         let elapsed = start.elapsed().as_secs_f64();
@@ -427,7 +376,8 @@ fn benchmark_throughput(
     let mut cakes = Cakes::new(data_clone, seed, entropy_criteria);
     cakes.auto_tune_knn(k, 10);
 
-    for _ in 0..num_trials {
+    for i in 0..num_trials {
+        debug!("Running entropy trial {}/{}...", i + 1, num_trials);
         let start = std::time::Instant::now();
         cakes.batch_tuned_knn_search(&queries, k);
         let elapsed = start.elapsed().as_secs_f64();
@@ -440,4 +390,123 @@ fn benchmark_throughput(
         throughput_entropy.iter().sum::<f64>() / num_trials as f64,
     );
     Ok((throughput_naive, throughput_entropy))
+}
+
+/// Run build benchmarks
+///
+/// # Arguments
+///
+/// * `output_dir` - The path to the output directory
+/// * `dataset` - The name of the dataset
+/// * `data` - The data
+/// * `seed` - Random seed to use
+/// * `num_trials` - Number of trials to run
+/// * `naive_criteria` - The naive partition criteria
+/// * `entropy_criteria` - The entropy partition criteria
+///
+fn run_build_time_benchmarks(
+    output_dir: &Path,
+    dataset: &str,
+    data: VecDataset<Vec<f32>, f32, String>,
+    seed: Option<u64>,
+    num_trials: usize,
+    naive_criteria: &PartitionCriteria<f32>,
+    entropy_criteria: &PartitionCriteria<f32>,
+) -> Result<(), String> {
+    let (build_time_naive, build_time_entropy) =
+        benchmark_build_times(data, seed, num_trials, naive_criteria, entropy_criteria)?;
+
+    print_results(
+        "Build time",
+        (build_time_naive * 1000.0, build_time_entropy * 1000.0),
+        "ms",
+    );
+
+    let results = vec![vec![
+        build_time_naive.to_string(),
+        build_time_entropy.to_string(),
+    ]];
+
+    write_results(
+        output_dir,
+        format!(
+            "build-{}-{}seed-{}trials",
+            dataset,
+            seed.unwrap(),
+            num_trials,
+        )
+        .as_str(),
+        vec!["Build time (naive)", "Build time (entropy)"],
+        results,
+    );
+
+    Ok(())
+}
+
+/// Run query throughput benchmarks
+///
+/// # Arguments
+///
+/// * `output_dir` - The path to the output directory
+/// * `dataset` - The name of the dataset
+/// * `data` - The data
+/// * `queries` - The queries
+/// * `ks` - The values of k to use
+/// * `seed` - Random seed to use
+/// * `num_trials` - Number of trials to run
+/// * `naive_criteria` - The naive partition criteria
+/// * `entropy_criteria` - The entropy partition criteria
+///
+#[allow(clippy::too_many_arguments)]
+fn run_query_throughput_benchmarks(
+    output_dir: &Path,
+    dataset: &str,
+    data: VecDataset<Vec<f32>, f32, String>,
+    queries: Vec<&Vec<f32>>,
+    ks: Vec<usize>,
+    seed: Option<u64>,
+    num_trials: usize,
+    naive_criteria: &PartitionCriteria<f32>,
+    entropy_criteria: &PartitionCriteria<f32>,
+) -> Result<(), String> {
+    let mut throughput_results = Vec::with_capacity(ks.len());
+    for k in &ks {
+        throughput_results.push(vec![k.to_string(), String::new(), String::new()]);
+    }
+
+    for i in 0..ks.len() {
+        info!("Running throughput benchmarks (k = {})", ks[i]);
+        let k = ks[i];
+
+        let (throughput_naive, throughput_entropy) = benchmark_throughput(
+            data.clone(),
+            queries.clone(),
+            k,
+            seed,
+            num_trials,
+            naive_criteria,
+            entropy_criteria,
+        )?;
+
+        throughput_results[i][1] = throughput_naive.to_string();
+        throughput_results[i][2] = throughput_entropy.to_string();
+
+        print_results("Throughput", (throughput_naive, throughput_entropy), "QPS");
+    }
+
+    // Write the throughput results
+    write_results(
+        output_dir,
+        format!(
+            "query-{}-{}seed-{}trials",
+            dataset,
+            seed.unwrap(),
+            num_trials,
+        )
+        .as_str(),
+        vec!["k", "Throughput (QPS, naive)", "Throughput (QPS, entropy)"],
+        throughput_results,
+    );
+
+    Ok(())
 }
