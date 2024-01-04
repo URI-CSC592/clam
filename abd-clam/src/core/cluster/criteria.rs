@@ -13,7 +13,7 @@ use crate::Cluster;
 pub trait PartitionCriterion<U: Number>: Send + Sync {
     /// Check whether a `Cluster` meets the criterion for partitioning.
     // TODO: Figure out how to have this not leak `Cluster` or make `Cluster` public.
-    fn check(&self, c: &Cluster<U>) -> bool;
+    fn check(&self, c: &Cluster<U>, indices: &[usize]) -> bool;
 }
 
 /// A collection of criteria used to decide when to partition a `Cluster`.
@@ -82,12 +82,12 @@ impl<U: Number> PartitionCriteria<U> {
 }
 
 impl<U: Number> PartitionCriterion<U> for PartitionCriteria<U> {
-    fn check(&self, cluster: &Cluster<U>) -> bool {
+    fn check(&self, cluster: &Cluster<U>, indices: &[usize]) -> bool {
         !cluster.is_singleton()
             && if self.check_all {
-                self.criteria.iter().all(|c| c.check(cluster))
+                self.criteria.iter().all(|c| c.check(cluster, indices))
             } else {
-                self.criteria.iter().any(|c| c.check(cluster))
+                self.criteria.iter().any(|c| c.check(cluster, indices))
             }
     }
 }
@@ -97,7 +97,7 @@ impl<U: Number> PartitionCriterion<U> for PartitionCriteria<U> {
 pub struct MaxDepth(usize);
 
 impl<U: Number> PartitionCriterion<U> for MaxDepth {
-    fn check(&self, c: &Cluster<U>) -> bool {
+    fn check(&self, c: &Cluster<U>, _: &[usize]) -> bool {
         c.depth() < self.0
     }
 }
@@ -107,7 +107,7 @@ impl<U: Number> PartitionCriterion<U> for MaxDepth {
 pub struct MinCardinality(usize);
 
 impl<U: Number> PartitionCriterion<U> for MinCardinality {
-    fn check(&self, c: &Cluster<U>) -> bool {
+    fn check(&self, c: &Cluster<U>, _: &[usize]) -> bool {
         c.cardinality() > self.0
     }
 }

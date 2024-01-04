@@ -627,7 +627,7 @@ impl<U: Number> Cluster<U> {
         criteria: &PartitionCriteria<U>,
         mut indices: Vec<usize>,
     ) -> (Self, Vec<usize>) {
-        if criteria.check(&self) {
+        if criteria.check(&self, &indices) {
             mt_log!(
                 Level::Debug,
                 "Partitioning cluster at depth {} with offset {} and cardinality {}.",

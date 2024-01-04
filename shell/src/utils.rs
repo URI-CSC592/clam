@@ -29,8 +29,8 @@ pub struct MinShannonEntropy {
 ///
 /// `true` if the Shannon entropy of the cluster is greater than the threshold, `false` otherwise
 impl<U: Number> PartitionCriterion<U> for MinShannonEntropy {
-    fn check(&self, c: &Cluster<U>) -> bool {
-        let entropy = shannon_entropy_from_metadata(c, &self.data);
+    fn check(&self, _: &Cluster<U>, indices: &[usize]) -> bool {
+        let entropy = shannon_entropy_from_metadata(indices, &self.data);
         entropy > self.threshold
     }
 }
@@ -128,13 +128,13 @@ fn count_occurrences<T: Eq + Copy>(values: &[T]) -> Vec<(T, usize)> {
 ///
 #[allow(dead_code)]
 #[allow(clippy::cast_precision_loss)]
-pub fn shannon_entropy_from_metadata<U: Number>(
-    cluster: &Cluster<U>,
+pub fn shannon_entropy_from_metadata(
+    indices: &[usize],
     metadata: &VecDataset<Vec<f32>, f32, String>,
 ) -> f64 {
-    let cluster_metadata: Vec<_> = cluster
-        .indices()
-        .map(|i| metadata.metadata_of(i).unwrap())
+    let cluster_metadata: Vec<_> = indices
+        .iter()
+        .map(|&i| metadata.metadata_of(i).unwrap())
         .collect();
 
     // Put the metadata values and counts into an array of tuples
